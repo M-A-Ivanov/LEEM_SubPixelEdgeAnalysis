@@ -49,7 +49,7 @@ def try_canny_devernay_detection(edge=None):
     processor.load_image(image_align)
     processor.align(preprocess=False)
 
-    image = reader.read_single(os.path.join(SRC_FOLDER, REGION), frames=0).data
+    image = reader.read_single(os.path.join(SRC_FOLDER, REGION), frames=1000).data
 
     processor.load_image(image)
 
@@ -320,4 +320,4 @@ class FrontEndDetector(FluctuationsDetector):
 
 if __name__ == '__main__':
     # manual_masking(SRC_FOLDER, TARGET_FOLDER, EDGE, load_masks=True, num_images=10)
-    try_canny_devernay_detection(edge="edge 1")
+    try_canny_devernay_detection(edge=None)

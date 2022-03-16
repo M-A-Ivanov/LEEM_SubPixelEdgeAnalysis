@@ -116,7 +116,7 @@ class FFTResults(Results):
             n = n[2:15]
             q = q[2:15]
         proportional_q = (1./q)**2
-        slope, intercept, _, _, _ = stats.linregress(proportional_q, y_q_msa[n])
+        slope, intercept, _, _, _ = stats.linregress(proportional_q, y_q_msa[n-1])
         print("slope = {} \n intercept = {}".format(round(slope, 5), round(intercept, 5)))
         plt.figure()
         plt.plot(proportional_q, (slope * proportional_q + intercept), color='b')

@@ -190,7 +190,7 @@ def draw_analyzed_edge(results_path, region):
 
 
 if __name__ == "__main__":
-    do_detection = 1
+    do_detection = 0
     do_transform = 1
     do_analysis = 1
     regions = [REGION]
@@ -203,7 +203,7 @@ if __name__ == "__main__":
     for region in regions:
         if do_detection:
             detector = FluctuationsDetector(os.path.join(SRC_FOLDER, region), TARGET_FOLDER, edges)
-            detector.many_edge_canny_devernay_detection(load_masks=True)
+            detector.many_edge_canny_devernay_detection(load_masks=False)
         if do_transform:
             for edge in edges:
                 res_path = os.path.join(RESULTS_FOLDER, region, edge)
@@ -212,7 +212,7 @@ if __name__ == "__main__":
             for edge in edges:
                 res_path = os.path.join(RESULTS_FOLDER, region, edge)
                 sigma = distribution_analysis(res_path, adjusted=False)
-                beta = fft_analysis(res_path, adjusted=False, full=True)
+                beta = fft_analysis(res_path, adjusted=False, full=False)
                 # get_correlations(res_path,  fps=20, adjusted=False)
                 draw_analyzed_edge(res_path, region)
                 get_paper_results(res_path, beta=beta, sigma=sigma)

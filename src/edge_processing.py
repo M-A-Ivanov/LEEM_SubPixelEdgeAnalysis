@@ -101,8 +101,8 @@ class EdgeAnalyzer:
     def perpendiculars_to_save(self):
         perpoints = np.zeros((len(self.perpendiculars), 2, 2))
         for i, perp in enumerate(self.perpendiculars):
-            perpoints[i, 0, ] = perp.mid
-            perpoints[i, 1, ] = perp.second
+            perpoints[i, 0,] = perp.mid
+            perpoints[i, 1,] = perp.second
         return perpoints
 
     def perpendiculars_to_load(self, perp_arr, low_memory=True):
@@ -125,12 +125,12 @@ class EdgeAnalyzer:
                                                                  second_pt=(edge_point + np.array([1, 0]))))
             return
 
-        perp_slope = -1./slope
-        relevant_x_coordinates = np.arange(np.ceil(np.min(edge[:, 0]))+pixel_average,
-                                           np.floor(np.max(edge[:, 0]))-pixel_average)
+        perp_slope = -1. / slope
+        relevant_x_coordinates = np.arange(np.ceil(np.min(edge[:, 0])) + pixel_average,
+                                           np.floor(np.max(edge[:, 0])) - pixel_average)
         for x in relevant_x_coordinates:
             mid = np.array([x, slope * x + intercept])
-            second = np.array([x + 1, perp_slope * (x + 1) + (slope - perp_slope)*x + intercept])
+            second = np.array([x + 1, perp_slope * (x + 1) + (slope - perp_slope) * x + intercept])
             self.perpendiculars.append(PerpendicularAdjuster(mid_pt=mid, second_pt=second))
         if savefig is not None:
             plt.figure()
@@ -179,7 +179,7 @@ class EdgeAnalyzer:
             plt.figure()
             plt.scatter(edge[:, 0], edge[:, 1], alpha=0.8)
 
-        def get_perp(segment):
+        def get_perp(segment, point=None):
 
             def point_on_line(a, b, p):
                 ap = p - a
@@ -198,9 +198,12 @@ class EdgeAnalyzer:
             else:
                 pt1, pt2 = np.array([segment[0, 0], slope * segment[0, 0] + intercept]), \
                            np.array([segment[-1, 0], slope * segment[-1, 0] + intercept])
-                mid_point = np.mean(
-                    [point_on_line(pt1, pt2, segment[0]), point_on_line(pt1, pt2, segment[-1])],
-                    axis=0)
+                if point is not None:
+                    mid_point = point_on_line(pt1, pt2, point)
+                else:
+                    mid_point = np.mean(
+                        [point_on_line(pt1, pt2, segment[0]), point_on_line(pt1, pt2, segment[-1])],
+                        axis=0)
             perpt = np.array([mid_point[0] - pt2[1] + pt1[1], mid_point[1] + pt2[0] - pt1[0]])
             if not np.isnan((mid_point, perpt)).any():
                 return PerpendicularAdjuster(mid_pt=mid_point, second_pt=perpt)
@@ -209,11 +212,19 @@ class EdgeAnalyzer:
 
         print("Creating perpendiculars (bisectors)...")
         if every_point:
-            for i in tqdm(range(int(pixel_average / 2), (len(edge) - int(pixel_average / 2))), leave=False):
-                segment = measure.approximate_polygon(edge[i - int(pixel_average / 2):(i + int(pixel_average / 2))],
-                                                      tolerance=2)
+            for i in tqdm(range(0, len(edge)), leave=False):
+                if i < pixel_average/2:
+                    segment = measure.approximate_polygon(edge[:pixel_average], tolerance=2)
+                    point = edge[i]
+                elif i > (len(edge) - pixel_average/2):
+                    segment = measure.approximate_polygon(edge[-pixel_average:], tolerance=2)
+                    point = edge[i]
+                else:
+                    segment = measure.approximate_polygon(edge[i - int(pixel_average / 2):(i + int(pixel_average / 2))],
+                                                          tolerance=2)
+                    point = None
 
-                perp = get_perp(segment)
+                perp = get_perp(segment, point)
                 if perp is not None:
                     self.perpendiculars.append(perp)
                     if savefig is not None:

@@ -40,7 +40,7 @@ CLOUD_PATH = r"C:\Users\c1545871\OneDrive - Cardiff University"  # uni computer
 
 DANIDATA_PATH = CLOUD_PATH + r"\Data\OriginData"
 # REGION = '3microns, 0.1s, r1'
-REGION = 'run 6'
+REGION = 'run 10'
 # SRC_FOLDER = os.path.join(r"C:\Users\User\OneDrive - Cardiff University\Data\LEEM\27042021\fluctuations")
 
 # SRC_FOLDER = os.path.join(CLOUD_PATH, "Data", "LEEM", r"07032022", r"fluctuations")
