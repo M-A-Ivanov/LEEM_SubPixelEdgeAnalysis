@@ -70,7 +70,7 @@ class ImageProcessor(ImageRecorder):
     def load_image(self, img, label=None):
         # if img.shape[-1] == 3:
         #     img = rgb2gray(img)
-        self.images = [img]
+        self.images = [img_as_float(img)]
         if label is not None:
             self.titles = ["Original at {}".format(label)]
         else:
@@ -384,8 +384,8 @@ class ImageProcessor(ImageRecorder):
         self.images.append(io.filters.rank.equalize(self.images[-1], selem=selem))
         self.titles.append("Locally Equalized Hist")
 
-    def global_hist_equal(self):
-        self.images.append(exposure.equalize_hist(self.images[-1]))
+    def global_hist_equal(self, mask=None):
+        self.images.append(exposure.equalize_hist(self.images[-1], mask=mask))
         self.titles.append("Globally Equalized Hist")
 
     def clahe_hist_equal(self, kernel_size=None):

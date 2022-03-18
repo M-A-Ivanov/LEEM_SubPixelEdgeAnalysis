@@ -149,7 +149,7 @@ def fft_analysis(results_path, adjusted=False, full=True):
 
 def get_correlations(results_path, fps, adjusted=False):
     anal = FFTResults(results_path, original=not adjusted)
-    return anal.get_fourier_correlation(fps)
+    return anal.get_real_space_correlation(fps)
 
 
 def get_paper_results(results_path, beta, sigma):
@@ -190,20 +190,20 @@ def draw_analyzed_edge(results_path, region):
 
 
 if __name__ == "__main__":
-    do_detection = 0
+    do_detection = 1
     do_transform = 1
     do_analysis = 1
     regions = [REGION]
     # region = _all_regions()
     # edges = EDGE
-    edges = ["edge 1", "edge 2", "edge 3"]
+    edges = ["edge 111"]  # , "edge 2", "edge 3"]
     # edges = _all_edges(regions)
     make_directories(regions, edges)
 
     for region in regions:
         if do_detection:
             detector = FluctuationsDetector(os.path.join(SRC_FOLDER, region), TARGET_FOLDER, edges)
-            detector.many_edge_canny_devernay_detection(load_masks=False)
+            detector.many_edge_canny_devernay_detection(load_masks=True)
         if do_transform:
             for edge in edges:
                 res_path = os.path.join(RESULTS_FOLDER, region, edge)
@@ -211,8 +211,8 @@ if __name__ == "__main__":
         if do_analysis:
             for edge in edges:
                 res_path = os.path.join(RESULTS_FOLDER, region, edge)
-                sigma = distribution_analysis(res_path, adjusted=False)
+                # sigma = distribution_analysis(res_path, adjusted=False)
                 beta = fft_analysis(res_path, adjusted=False, full=False)
-                # get_correlations(res_path,  fps=20, adjusted=False)
-                draw_analyzed_edge(res_path, region)
-                get_paper_results(res_path, beta=beta, sigma=sigma)
+                # get_correlations(res_path,  fps=15, adjusted=False)
+                # draw_analyzed_edge(res_path, region)
+                # get_paper_results(res_path, beta=beta, sigma=sigma)

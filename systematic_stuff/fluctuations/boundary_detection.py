@@ -59,12 +59,12 @@ def try_canny_devernay_detection(edge=None):
     else:
         mask = processor.get_mask(MASK_SIZE)
     local_mask = processor.cut_to_mask(mask)
-    processor.clahe_hist_equal()
-    processor.denoise_nlm(fast=True)
+    processor.global_hist_equal(local_mask)
+    processor.denoise_bilateral()
     coords = processor.canny_devernay_edges(sigma=CANNY_SIGMA, mask=local_mask)
     coords = processor.clean_up_coordinates(coords, 5)
     processor.plot_all()
-    processor.revert(5)
+    processor.revert(4)
 
 
 def try_tanh_detection():
@@ -185,8 +185,8 @@ class FluctuationsDetector:
                 self.image_processor.align(preprocess=False)
                 for original_mask, grouper_canny in zip(masks, groupers_canny):
                     mask = self.image_processor.cut_to_mask(original_mask)
-                    self.image_processor.clahe_hist_equal()
-                    self.image_processor.denoise_nlm(fast=True)
+                    self.image_processor.global_hist_equal(mask)
+                    self.image_processor.denoise_bilateral()
                     coordinates = self.image_processor.canny_devernay_edges(mask=mask, sigma=CANNY_SIGMA)
                     coordinates = self.image_processor.clean_up_coordinates(coordinates, 10)
                     grouper_canny.append_edges(coordinates)
@@ -320,4 +320,4 @@ class FrontEndDetector(FluctuationsDetector):
 
 if __name__ == '__main__':
     # manual_masking(SRC_FOLDER, TARGET_FOLDER, EDGE, load_masks=True, num_images=10)
-    try_canny_devernay_detection(edge=None)
+    try_canny_devernay_detection(edge="edge 1")

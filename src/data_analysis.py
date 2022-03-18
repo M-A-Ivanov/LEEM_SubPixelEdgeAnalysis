@@ -27,8 +27,8 @@ class Results:
             picklepath = os.path.join(results_path, "offsets_adjusted.pickle")
         with open(picklepath, "rb") as f:
             positions, lengths = pickle.load(f)
-        length = np.average(lengths)*pixel
-        positions = pixel*positions
+        length = np.average(lengths)  # *pixel
+        positions = positions  # *pixel
         return positions, length
 
     def remove_drift(self):
@@ -90,8 +90,8 @@ class FFTResults(Results):
         return y_q
 
     def get_fft(self):
-        # return (1 / np.sqrt(self.length)) * self.fourier_transform(self.positions)
-        return (1 / np.sqrt(self.length)) * self.manual_fft(self.positions)
+        return (1 / np.sqrt(self.length)) * self.fourier_transform(self.positions)
+        # return (1 / np.sqrt(self.length)) * self.manual_fft(self.positions)
 
     def get_y_q_msa(self):
         array_fft = self.get_fft()
@@ -113,14 +113,14 @@ class FFTResults(Results):
 
         n, q, y_q_msa = self.get_y_q_msa()
         if not full:
-            n = n[2:15]
-            q = q[2:15]
+            n = n[6:20]
+            q = q[6:20]
         proportional_q = (1./q)**2
         slope, intercept, _, _, _ = stats.linregress(proportional_q, y_q_msa[n-1])
         print("slope = {} \n intercept = {}".format(round(slope, 5), round(intercept, 5)))
         plt.figure()
         plt.plot(proportional_q, (slope * proportional_q + intercept), color='b')
-        selected_y = y_q_msa[n]
+        selected_y = y_q_msa[n-1]
         plt.scatter(proportional_q, selected_y, facecolors='none', edgecolors='k', marker='o', alpha=0.8)
 
         if full:
@@ -139,12 +139,32 @@ class FFTResults(Results):
     def _q_selector(self, wavelength):
         return int(self.length/(2*np.pi*wavelength))
 
+    def get_real_space_correlation(self, fps):
+        def apply_correlation_bartelt(arr, n_lags=20):
+            lags = np.arange(0, n_lags)
+            G = np.ones(n_lags)
+            for i, lag in enumerate(lags):
+                G[i] = np.average(np.absolute(np.square(arr))) - np.average(np.roll(arr, lag) * arr)
+            return G
+
+        time = (1 / fps) * np.arange(self.positions.shape[1])
+        plt.figure()
+        n_lags = 200
+        G = np.apply_along_axis(apply_correlation_bartelt, 1, self.positions, **{"n_lags": n_lags})
+        G_avg = np.average(G[:, 1:], axis=0)
+        average_frames = 5
+        G_avg = np.mean(G_avg[:(G_avg.size // average_frames) * average_frames].reshape(-1, average_frames), axis=1)
+        plt.scatter(np.linspace(0, n_lags/fps, G_avg.size), G_avg)
+        # plt.show()
+        plt.savefig(os.path.join(self.results_path, 'correlation_real.png'), dpi=1000, transparent=False)
+        plt.close()
+
     def get_fourier_correlation(self, fps):
         def apply_correlation_common(arr, n_lags=20):
             lags = np.arange(1, n_lags)
             G = np.zeros(n_lags)
             for i, lag in enumerate(lags):
-                G[i+1] = np.average(np.square(np.absolute(np.subtract(arr[:-lag], arr[lag:]))))
+                G[i + 1] = np.average(np.square(np.absolute(np.subtract(arr[:-lag], arr[lag:]))))
             return G[1:]
 
         def apply_correlation_alt(arr, n_lags=20):
@@ -154,9 +174,8 @@ class FFTResults(Results):
                 G[i] = 2*np.average(np.absolute(np.square(arr))) - 2*np.average(np.roll(arr, lag)*np.flip(arr))
             return G
 
-        import pandas as pd
-
         def apply_correlation_pandas(arr, n_lags=20):
+            import pandas as pd
             to_series = pd.Series(arr)
             correlations = np.empty(n_lags)
             for i in range(n_lags):
@@ -178,7 +197,7 @@ class FFTResults(Results):
             plt.plot(time[:G[n].size], G[n, ], label="n={}".format(n))
         plt.legend()
         # plt.show()
-        plt.savefig(os.path.join(self.results_path, 'correlation_fig.png'), dpi=1000, transparent=False)
+        plt.savefig(os.path.join(self.results_path, 'correlation_FFT.png'), dpi=1000, transparent=False)
         plt.close()
 
     def get_time_correlation(self, y=30):

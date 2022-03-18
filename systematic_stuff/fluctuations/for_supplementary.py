@@ -473,21 +473,21 @@ class FigureCreator:
         # self.image_process.denoise_nlm()
         name = "fluctuations_video"
         with tifffile.TiffWriter(os.path.join(self.res_path, name + '.tif')) as stack:
-            for i, raw in enumerate(tqdm(self.images[:5])):
+            for i, raw in enumerate(tqdm(self.images[:50])):
                 self.image_process.load_image(raw, label=i)
                 self.image_process.align(preprocess=True)
                 _ = self.image_process.cut_to_mask(mask)
-                self.image_process.global_hist_equal()
+                self.image_process.clahe_hist_equal()
                 shape = self.image_process.result().shape
                 image = resize(self.image_process.result(), (4 * shape[0], 4 * shape[1]))
                 self.image_process.denoise_boxcar(kernel_radius=3)
-                image = np.concatenate((image, resize(self.image_process.result(), (4 * shape[0], 4 * shape[1]))))
+                image = np.concatenate((image, resize(self.image_process.result(), (4 * shape[0], 4 * shape[1]))), axis=1)
                 self.image_process.revert(1)
                 self.image_process.denoise_gaussian(3)
-                image = np.concatenate((image, resize(self.image_process.result(), (4 * shape[0], 4 * shape[1]))))
+                image = np.concatenate((image, resize(self.image_process.result(), (4 * shape[0], 4 * shape[1]))), axis=1)
                 self.image_process.revert(1)
                 self.image_process.denoise_nlm(fast=False)
-                image = np.concatenate((image, resize(self.image_process.result(), (4 * shape[0], 4 * shape[1]))))
+                image = np.concatenate((image, resize(self.image_process.result(), (4 * shape[0], 4 * shape[1]))), axis=1)
 
                 stack.save(img_as_ubyte(image),
                            contiguous=False)
@@ -960,8 +960,9 @@ if __name__ == '__main__':
     #     raw_to_video(path, destination_path=target_folder, fps=20, name="region" + str(i+10))
     # _test_remove_background()
     region = REGION
-    edge = "edge 12"
-    # fig = FigureCreator(region, edge)
-    analysis_vs_cap_in_amplitude()
+    edge = "edge 1"
+    fig = FigureCreator(region, edge)
+    fig.fluctuations_video()
+    # analysis_vs_cap_in_amplitude()
     # analysis_vs_experiment_duration()
     # show_detection()
