@@ -15,15 +15,16 @@ from image_processing import ImageProcessor
 from raw_reader import RawReader
 
 
-def _preprocess_image(image, local_hist=True):
-    if local_hist:
-        image = cv2.convertScaleAbs(image)
-        clahe = cv2.createCLAHE(tileGridSize=(128, 128))
-        image = clahe.apply(image)
-    elif not local_hist:
-        image = cv2.convertScaleAbs(image)
-        image = cv2.equalizeHist(image)
-    return image
+def _preprocess_image(image, local_hist=None):
+    process = ImageProcessor()
+    process.load_image(image)
+    if local_hist is None:
+        process.normalize()
+    elif local_hist:
+        process.clahe_hist_equal()
+    else:
+        process.global_hist_equal()
+    return process.result(uint8=True)
 
 
 def _cutting_fn(x_frac=0.5, y_frac=0.5, area_frac=0.5):
@@ -78,7 +79,7 @@ def raw_to_tiff(folder_path, overlay: List[str] = None, align=True, process=Fals
     target_path = os.path.join(folder_path, "tiff")
     os.makedirs(target_path, exist_ok=True)
     reader = RawReader()
-    images_list = reader.read_folder(folder_path, every_nth=10)
+    images_list = reader.read_folder(folder_path, every_nth=20)
     # images_list = _sort_by_time(images_list)  # deprecated
     if align:
         images_list = _align_images(images_list)
@@ -94,11 +95,11 @@ def raw_to_tiff(folder_path, overlay: List[str] = None, align=True, process=Fals
             stack.save(image, contiguous=False)
 
 
-def raw_tiff_to_video(folder_path, name=None, fps=10, align=True):
+def raw_tiff_to_video(folder_path, name=None, fps=15, align=True):
     target_path = os.path.join(folder_path, "video")
     os.makedirs(target_path, exist_ok=True)
     reader = RawReader()
-    images_list = reader.read_folder(folder_path)
+    images_list = reader.read_folder(folder_path, every_nth=10)
     if align:
         images_list = _align_images(images_list)
     if name is None:
@@ -109,7 +110,7 @@ def raw_tiff_to_video(folder_path, name=None, fps=10, align=True):
                             fps, video_shape, isColor=False)
     print("Producing video...")
     for image in tqdm(images_list):
-        image = _preprocess_image(image.data, local_hist=False)
+        image = _preprocess_image(image.data, local_hist=None)
         video.write(image)
     cv2.destroyAllWindows()
     video.release()
@@ -123,7 +124,7 @@ def raw_to_video(folder_path, destination_path=None, name=None, fps=None, overla
         target_path = destination_path
     os.makedirs(target_path, exist_ok=True)
     reader = RawReader()
-    images_list = reader.read_folder(folder_path)
+    images_list = reader.read_folder(folder_path, every_nth=20)
     images_list = _sort_by_time(images_list)
     if align:
         images_list = _align_images(images_list)
@@ -201,7 +202,7 @@ def png_to_tiff(folder_path):
 
     with tifffile.TiffWriter(os.path.join(folder_path, 'boundary detection.tif')) as stack:
         for filename in list_of_files:
-            stack.save(
+            stack.write(
                 io.imread(os.path.join(folder_path, filename)),
                 contiguous=False
             )
@@ -210,13 +211,13 @@ def png_to_tiff(folder_path):
 if __name__ == '__main__':
     # HOW TO USE THIS CODE:
     #  1: Copy-paste directory path (keep the r in the beginning of string, otherwise Windows won't be happy!)
-    FOLDER = r'E:\Cardiff LEEM\Raw_images\07032022\temp'
+    FOLDER = r'E:\Cardiff LEEM\Raw_images\11032022\run 10'
     #  2: Choose appropriate function, depending on desired format.
     # raw_to_png(FOLDER)
 
     # 2.5: For the other ones, you can add an overlay of the info you want to print on the image. Most useful are:
     # FOV, Start Voltage, time (you can change color on line 74 or 114)
 
-    # raw_to_video(FOLDER, overlay=['time', 'FOV'])
+    raw_tiff_to_video(FOLDER)
     # raw_to_tiff(FOLDER, overlay=['time', 'FOV'])
-    raw_to_tiff(FOLDER, align=True)
+    # raw_to_tiff(FOLDER, align=True)

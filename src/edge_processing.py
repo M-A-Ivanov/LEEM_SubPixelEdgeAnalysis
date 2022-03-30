@@ -52,7 +52,7 @@ class EdgeAnalyzer:
             other_points = np.insert(other_points, np.argmin(pair_sums) + 1, point, axis=0)[:-1]
             return other_points
 
-        threshhold_dist = 10
+        threshhold_dist = 8
         for i, edge in enumerate(self.edges):
             save_length = len(edge)
             real_length = 0
@@ -147,14 +147,14 @@ class EdgeAnalyzer:
         else:
             plt.show()
 
-    def get_perpendiculars_adaptive(self, every_point=True, edge_frame=None, pixel_average=8, savefig=None):
+    def get_perpendiculars_adaptive(self, every_point=True, edge_frame=None,
+                                    pixel_average=8, savefig=None):
         """
         Adaptive perpendiculars creation. They follow the approximate local shape of the step.
 
         Args:
             persistent: bool;   whether to keep the first calculated perpendiculars throughout.
             edge_frame: int;    choose which video frame we use for the calculation of the perpendiculars.
-                        TODO: if None, get perpendiculars for all edges at the same time? otherwise, make default = 0
 
             pixel_average: int; perpendiculars are the bisection (symmetral) of the line fit of every *pixel_average*
                                 number of points on the chosen edge.
@@ -170,14 +170,9 @@ class EdgeAnalyzer:
         if edge_frame is None:
             edge_frame = 0
         edge = self.edges[edge_frame]
-        truncation = len(edge) % pixel_average
-        if truncation:
-            edge = edge[int(truncation / 2):-(int(truncation / 2) + int(truncation % 2))]
-        assert len(edge) % pixel_average == 0
 
-        if savefig is not None:
-            plt.figure()
-            plt.scatter(edge[:, 0], edge[:, 1], alpha=0.8)
+        plt.figure()
+        plt.plot(edge[:, 0], edge[:, 1], alpha=0.8)
 
         def get_perp(segment, point=None):
 
@@ -189,15 +184,22 @@ class EdgeAnalyzer:
                 else:
                     ret = p
                 return ret
-
-            slope, intercept, r, p, se = stats.linregress(segment[:, 0], segment[:, 1])
+            need_to_swap = (segment[:, 0].max() - segment[:, 0].min()) < (segment[:, 1].max() - segment[:, 1].min())
+            if not need_to_swap:
+                slope, intercept, r, p, se = stats.linregress(segment[:, 0], segment[:, 1])
+            else:
+                slope, intercept, r, p, se = stats.linregress(segment[:, 1], segment[:, 0])
             if np.isnan((slope, intercept)).any():
                 pt1, pt2 = np.array([segment[0, 0], segment[0, 1]]), \
                            np.array([segment[-1, 0], segment[-1, 1]])
                 mid_point = np.mean([pt1, pt2], axis=0)
             else:
-                pt1, pt2 = np.array([segment[0, 0], slope * segment[0, 0] + intercept]), \
-                           np.array([segment[-1, 0], slope * segment[-1, 0] + intercept])
+                if not need_to_swap:
+                    pt1, pt2 = np.array([segment[0, 0], slope * segment[0, 0] + intercept]), \
+                               np.array([segment[-1, 0], slope * segment[-1, 0] + intercept])
+                else:
+                    pt1, pt2 = np.array([segment[0, 1] * slope + intercept, segment[0, 1]]), \
+                               np.array([slope * segment[-1, 1] + intercept, segment[-1, 1]])
                 if point is not None:
                     mid_point = point_on_line(pt1, pt2, point)
                 else:
@@ -222,19 +224,18 @@ class EdgeAnalyzer:
                 else:
                     segment = measure.approximate_polygon(edge[i - int(pixel_average / 2):(i + int(pixel_average / 2))],
                                                           tolerance=2)
-                    point = None
+                    point = edge[i]
 
                 perp = get_perp(segment, point)
                 if perp is not None:
                     self.perpendiculars.append(perp)
-                    if savefig is not None:
-                        if i % 2 == 0:
-                            # plt.plot([pt1[0], pt2[0]], [pt1[1], pt2[1]], color='red', alpha=0.5) # the fitted lines
-                            plt.scatter(perp.mid[0], perp.mid[1], color='green')  # the midpoints of fit lines
-                            second_pt_extended = perp.get_point_at_dist(10)
-                            plt.scatter((perp.mid[0], second_pt_extended[0]),
-                                        (perp.mid[1], second_pt_extended[1]), color='red')
-                            plt.axline(perp.mid, perp.second, linestyle='dashed')  # the perpendiculars
+                    if i % 1 == 0:
+                        # plt.plot([pt1[0], pt2[0]], [pt1[1], pt2[1]], color='red', alpha=0.5) # the fitted lines
+                        plt.scatter(perp.mid[0], perp.mid[1], color='green')  # the midpoints of fit lines
+                        second_pt_extended = perp.get_point_at_dist(10)
+                        plt.scatter(perp.mid[0], perp.mid[1], color='red')
+                        plt.scatter(second_pt_extended[0], second_pt_extended[1], color="green", alpha=0.6)
+                        plt.axline(perp.mid, perp.second, linestyle='dashed')  # the perpendiculars
         else:
             for i in range(int(len(edge) / pixel_average)):
                 segment = edge[i * pixel_average:(i + 1) * pixel_average]
@@ -243,14 +244,17 @@ class EdgeAnalyzer:
                 if perp is not None:
                     self.perpendiculars.append(perp)
 
-                    if savefig is not None:
-                        # plt.plot([pt1[0], pt2[0]], [pt1[1], pt2[1]], color='red', alpha=0.5)      # the fitted lines
-                        plt.scatter(perp.mid[0], perp.mid[1], color='green')  # the midpoints of fit lines
-                        plt.scatter((perp.mid[0], perp.second[0]), (perp.mid[1], perp.second[1]), color='red')
-                        plt.axline(perp.mid, perp.second, linestyle='dashed')  # the perpendiculars
+                    # plt.plot([pt1[0], pt2[0]], [pt1[1], pt2[1]], color='red', alpha=0.5)      # the fitted lines
+                    plt.scatter(perp.mid[0], perp.mid[1], color='green')  # the midpoints of fit lines
+                    plt.scatter((perp.mid[0], perp.second[0]), (perp.mid[1], perp.second[1]), color='red')
+                    plt.axline(perp.mid, perp.second, linestyle='dashed')  # the perpendiculars
+        plt.axis("equal")
         if savefig is not None:
-            plt.axis("equal")
+
             plt.savefig(os.path.join(savefig, "perpendiculars.png"))
+            plt.close()
+        else:
+            plt.show()
             plt.close()
 
     def show_perps(self, edge_frame=1, savefig=None):

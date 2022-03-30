@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from statsmodels.tsa.stattools import acf
 
 from global_paths import DANIDATA_PATH, RESULTS_FOLDER, REGION, EDGE
-from global_parameters import pixel
+from global_parameters import pixel, AxisNames
 import json
 
 
@@ -17,6 +17,11 @@ class Results:
         self.results_path = results_path
         self.positions, self.length = self.load_data(results_path, original)
         self.remove_drift()
+
+    def units_of_kinks(self, data):
+        sixbysixsize = 2.4 / pixel  # in pixels; the 6x6 is about 24 x 24 angstroms
+        bins = np.arange(np.min(data), np.max(data), sixbysixsize)
+        return np.array([bins[i] for i in np.digitize(data, bins) - 1])
 
     def load_data(self, results_path, original=False):
         if results_path is None:
@@ -28,13 +33,13 @@ class Results:
         with open(picklepath, "rb") as f:
             positions, lengths = pickle.load(f)
         length = np.average(lengths)  # *pixel
-        positions = positions  # *pixel
+        # positions = self.units_of_kinks(positions)  # *pixel
         return positions, length
 
     def remove_drift(self):
         if self.positions is None:
             return
-        for i, perpendicular_detection in enumerate(self.positions):
+        for i in range(len(self.positions)):
             self.positions[i] = self.positions[i] - np.average(self.positions[i])
 
     def get_analysis(self, *args):
@@ -43,7 +48,7 @@ class Results:
     def plot_offsets(self):
         plt.figure()
         for n in range(10):
-            plt.plot(self.positions[:, n]+5*n)
+            plt.plot(self.positions[:, n] + 5 * n)
         plt.ylim(-5, 50)
         plt.show()
         plt.close()
@@ -51,7 +56,7 @@ class Results:
     def analyze_corrections(self):
         original, _ = self.load_data(self.results_path, original=True)
         corrected, _ = self.load_data(self.results_path, original=False)
-        corrections = (corrected - original)*pixel
+        corrections = (corrected - original) * pixel
         plt.hist(corrections)
         plt.show()
         # n, bin_edges = np.histogram(corrections, bins=20, density=True)
@@ -77,21 +82,21 @@ class FFTResults(Results):
                 y_q[:, frame] = fftpack.fft(y_x_t[:, frame])
         else:
             y_q = fftpack.fft(y_x_t)
-        return y_q[1:y_q.shape[0]//2, ]
+        return y_q[:y_q.shape[0] // 2, ]
 
     def manual_fft(self, y_x_t):
         n = y_x_t.shape[0]
         dx = np.arange(n)
-        q = 2 * dx * np.pi / self.length
+        q = 2 * dx * np.pi / len(y_x_t)  # self.length
         y_q = np.empty_like(y_x_t, dtype=np.complex128)
         for i in range(y_x_t.shape[1]):  # for each frame
             for j in range(n):  # for each mode
-                y_q[j, i] = np.sum(np.prod((y_x_t[:, i], np.exp(-1j*q[j]*dx)), axis=0))
-        return y_q
+                y_q[j, i] = np.sum(np.prod((y_x_t[:, i], np.exp(-1j * q[j] * dx)), axis=0))
+        return y_q[:y_q.shape[0] // 2, ]
 
     def get_fft(self):
-        return (1 / np.sqrt(self.length)) * self.fourier_transform(self.positions)
-        # return (1 / np.sqrt(self.length)) * self.manual_fft(self.positions)
+        return self.fourier_transform(self.positions)
+        # return self.manual_fft(self.positions)  # no longer: (1 / np.sqrt(self.length)) - for units reasons
 
     def get_y_q_msa(self):
         array_fft = self.get_fft()
@@ -105,39 +110,46 @@ class FFTResults(Results):
 
     def _apply_gauss_factor(self, y):
         real_q = 2 * np.pi * np.arange(len(y)) / self.length
-        gaussian_factor_ampl = np.exp(-(30 * pixel * pixel) * real_q * real_q / 8)
-        return y*gaussian_factor_ampl
+        gaussian_factor_ampl = np.exp(-(1) * real_q * real_q / 8)  # * pixel * pixel
+        return y * gaussian_factor_ampl
 
-    def get_analysis(self, full=True):
-        print("L={}".format(round(self.length, 2)))
+    def get_analysis(self):
+        print("L={}".format(round(self.length * pixel, 2)))
 
-        n, q, y_q_msa = self.get_y_q_msa()
-        if not full:
-            n = n[6:20]
-            q = q[6:20]
-        proportional_q = (1./q)**2
-        slope, intercept, _, _, _ = stats.linregress(proportional_q, y_q_msa[n-1])
-        print("slope = {} \n intercept = {}".format(round(slope, 5), round(intercept, 5)))
-        plt.figure()
-        plt.plot(proportional_q, (slope * proportional_q + intercept), color='b')
-        selected_y = y_q_msa[n-1]
-        plt.scatter(proportional_q, selected_y, facecolors='none', edgecolors='k', marker='o', alpha=0.8)
+        full_n, full_q, y_q_msa = self.get_y_q_msa()
+        ### Pixel to nm happens here:
+        full_q = full_q / pixel
+        y_q_msa = y_q_msa * pixel * pixel
+        sel_region = np.where(full_q < 0.15)
+        sel_n = full_n[sel_region]
+        proportional_q = full_q ** 2
+        sel_prop_q = proportional_q[sel_region]
+        y_q_msa = 1. / y_q_msa
+        selected_y = y_q_msa[sel_n - 1]
 
-        if full:
-            suffix = "_full"
-        else:
-            suffix = "_partial"
-        plt.savefig(os.path.join(self.results_path, 'fft_fig_weno{}.png'.format(suffix)), dpi=1000, transparent=False)
-        plt.close()
+        for q, y, suffix in zip([proportional_q, sel_prop_q],
+                                [y_q_msa, selected_y],
+                                ["_full", "_partial"]):
+            slope, intercept, _, _, _ = stats.linregress(q, y)
+            print("slope = {} \n intercept = {}".format(round(slope, 5), round(intercept, 5)))
+            fig, ax = plt.subplots()
+            ax.plot(q, (slope * q + intercept), color='b')
+
+            ax.scatter(q, y, facecolors='none', edgecolors='k', marker='o', alpha=0.8)
+            ax.set(xlabel=AxisNames.fft()["x"], ylabel=AxisNames.fft()["y"])
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.results_path, 'fft_fig_weno{}.png'.format(suffix)), dpi=1000,
+                        transparent=False)
+            plt.close()
 
         k_B = 8.617e-2
         T = 550 + 273.15
         beta = k_B * T / (self.length * slope)
         print("beta = {}".format(round(beta, 3)))
-        return beta
+        return beta, self.length * pixel
 
     def _q_selector(self, wavelength):
-        return int(self.length/(2*np.pi*wavelength))
+        return int(self.length / (2 * np.pi * wavelength))
 
     def get_real_space_correlation(self, fps):
         def apply_correlation_bartelt(arr, n_lags=20):
@@ -154,7 +166,7 @@ class FFTResults(Results):
         G_avg = np.average(G[:, 1:], axis=0)
         average_frames = 5
         G_avg = np.mean(G_avg[:(G_avg.size // average_frames) * average_frames].reshape(-1, average_frames), axis=1)
-        plt.scatter(np.linspace(0, n_lags/fps, G_avg.size), G_avg)
+        plt.scatter(np.linspace(0, n_lags / fps, G_avg.size), G_avg)
         # plt.show()
         plt.savefig(os.path.join(self.results_path, 'correlation_real.png'), dpi=1000, transparent=False)
         plt.close()
@@ -171,7 +183,7 @@ class FFTResults(Results):
             lags = np.arange(0, n_lags)
             G = np.ones(n_lags)
             for i, lag in enumerate(lags):
-                G[i] = 2*np.average(np.absolute(np.square(arr))) - 2*np.average(np.roll(arr, lag)*np.flip(arr))
+                G[i] = 2 * np.average(np.absolute(np.square(arr))) - 2 * np.average(np.roll(arr, lag) * np.flip(arr))
             return G
 
         def apply_correlation_pandas(arr, n_lags=20):
@@ -179,22 +191,23 @@ class FFTResults(Results):
             to_series = pd.Series(arr)
             correlations = np.empty(n_lags)
             for i in range(n_lags):
-                correlations[i] = to_series.corr(to_series.shift(i+1), method="pearson")
+                correlations[i] = to_series.corr(to_series.shift(i + 1), method="pearson")
             return correlations
 
         def apply_correlation_acf(arr, n_lags=20):
             return acf(arr, fft=False, nlags=n_lags)
 
         def _exp_fit(t, tau):
-            return np.exp(-t/tau)
-        time = (1/fps)*np.arange(self.positions.shape[1])
+            return np.exp(-t / tau)
+
+        time = (1 / fps) * np.arange(self.positions.shape[1])
         # array_fft = self.manual_fft(self.positions)
         array_fft = self.get_fft()
         plt.figure()
         G = np.apply_along_axis(apply_correlation_common, 1, array_fft, **{"n_lags": 200})
-        G = G/np.max(G)
-        for n in np.linspace(1, 10, 10, dtype=np.int):
-            plt.plot(time[:G[n].size], G[n, ], label="n={}".format(n))
+        # G = G/np.max(G)
+        for n in np.linspace(5, 50, 10, dtype=np.int):
+            plt.plot(time[:G[n].size], G[n,], label="n={}".format(n))
         plt.legend()
         # plt.show()
         plt.savefig(os.path.join(self.results_path, 'correlation_FFT.png'), dpi=1000, transparent=False)
@@ -203,9 +216,9 @@ class FFTResults(Results):
     def get_time_correlation(self, y=30):
         analysed_position = self.positions[y, :]
         n_lags = 100
-        correlation = np.zeros(n_lags-1)
+        correlation = np.zeros(n_lags - 1)
         for lag in range(1, n_lags):
-            correlation[lag-1] = np.average(np.square((np.subtract(analysed_position[lag], analysed_position[0]))))
+            correlation[lag - 1] = np.average(np.square((np.subtract(analysed_position[lag], analysed_position[0]))))
         # correlation = np.square(acf(analysed_position, fft=False, nlags=50, adjusted=False))
         plt.plot(np.arange(len(correlation)), correlation)
         plt.show()
@@ -216,6 +229,7 @@ class ExperimentalFFTResults(FFTResults):
         super(ExperimentalFFTResults, self).__init__(results_path=None)
         self.positions = offsets
         self.length = length
+        self.remove_drift()
 
 
 class DistributionResults(Results):
@@ -233,9 +247,9 @@ class DistributionResults(Results):
 
     def get_distribution(self):
         data = self.positions.flatten()
-        bins = int(2*(np.max(data) - np.min(data)))
-        data = data
-        n, bin_edges = np.histogram(data, bins=bins, density=True)
+        # bins = int(8 * (np.max(data) - np.min(data)))
+        bins = np.floor(np.max(data) - np.min(data)/(2.4/6)).astype(int)
+        n, bin_edges = np.histogram(data, bins=bins, density=True)  # either True or next line normalization
         x = .5 * (bin_edges[1:] + bin_edges[:-1])
         gauss_x = np.linspace(np.min(x), np.max(x), 1000)
         # mean, std = stats.norm.fit(data)
@@ -245,16 +259,21 @@ class DistributionResults(Results):
 
     def get_analysis(self):
         x, n, gauss_x, gauss, mean, std = self.get_distribution()
-        plt.figure()
+        # Pixel to nm happens here:
+        x = x * pixel
+        gauss_x = gauss_x * pixel
+        mean = mean * pixel
+        std = std * pixel
+        fig, ax = plt.subplots()
         plt.plot(gauss_x, gauss, color='b')
         plt.scatter(x, n, facecolors='none', edgecolors='k', marker='o', alpha=0.8)
         # axis_lim = np.min((abs(np.min(x)), abs(np.max(x))))
         # if axis_lim > 15:
         #     axis_lim = 15
         axis_lim = 20
-        plt.xlim(-axis_lim, axis_lim)
+        ax.set_xlim(-axis_lim, axis_lim)
         # plt.ylim(0, 0.2)
-
+        ax.set(xlabel=AxisNames.distr()["x"], ylabel=AxisNames.distr()["y"])
         plt.savefig(os.path.join(self.results_path, 'distr_fig.png'), dpi=1000, transparent=False)
         # plt.show()
         plt.close()
@@ -383,7 +402,7 @@ class SummingUp:
     def __init__(self, results_path: str, regions: List = None):
         self.results = []
         if regions is None:
-            self.regions = self._get_subfolders(results_path, "3microns, 0.2s")
+            self.regions = self._get_subfolders(results_path, "run")
         else:
             self.regions = regions
         # noinspection PyBroadException
@@ -418,6 +437,8 @@ class SummingUp:
 
 if __name__ == '__main__':
     """Currently, experiment with shortening the duration."""
-    results_path = os.path.join(RESULTS_FOLDER, REGION, EDGE)
-    anal = FFTResults(results_path, original=True)
-    beta = anal.get_analysis(full=True)
+    # pa = PaperAnalysis()
+    # pa.do_hannon_fit()
+    total = SummingUp(RESULTS_FOLDER)
+    total.extract_results()
+

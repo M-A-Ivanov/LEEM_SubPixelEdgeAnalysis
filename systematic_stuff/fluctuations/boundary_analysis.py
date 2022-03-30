@@ -5,7 +5,7 @@ import numpy as np
 from skimage.io import imsave
 
 from data_analysis import DistributionResults, PaperAnalysis, FFTResults
-from global_paths import RESULTS_FOLDER, SRC_FOLDER, REGION, load_pickle, TARGET_FOLDER
+from global_paths import RESULTS_FOLDER, SRC_FOLDER, REGION, load_pickle, TARGET_FOLDER, EDGE
 from global_parameters import pixel
 from edge_processing import EdgeAnalyzer
 
@@ -117,7 +117,7 @@ def adjust_rough_offsets(results_path):
     picklepath = os.path.join(results_path, "offsets_original.pickle")
     with open(picklepath, "rb") as f:
         positions, lengths = pickle.load(f)
-        
+
     perpspath = os.path.join(results_path, "perpendiculars.pickle")
     with open(perpspath, "rb") as f:
         perps = pickle.load(f)
@@ -138,25 +138,26 @@ def adjust_rough_offsets(results_path):
 def distribution_analysis(results_path, adjusted=False):
     anal = DistributionResults(results_path, original=not adjusted)
     mean, std = anal.get_analysis()
-    print("mean = {} \n sigma = {}".format(round(mean * pixel, 5), round(std * pixel, 2)))
-    return std * pixel
+    print("mean = {} \n sigma = {}".format(round(mean, 5), round(std, 2)))
+    return std
 
 
-def fft_analysis(results_path, adjusted=False, full=True):
+def fft_analysis(results_path, adjusted=False):
     anal = FFTResults(results_path, original=not adjusted)
-    return anal.get_analysis(full=full)
+    return anal.get_analysis()
 
 
 def get_correlations(results_path, fps, adjusted=False):
     anal = FFTResults(results_path, original=not adjusted)
-    return anal.get_real_space_correlation(fps)
+    return anal.get_real_space_correlation(fps)  # , anal.get_fourier_correlation(fps)
 
 
-def get_paper_results(results_path, beta, sigma):
+def get_paper_results(results_path, beta, sigma, length):
     paper = PaperAnalysis()
-    results = {'beta': (beta, "meV/nm^2"),
-               'sigma': (sigma, "1/nm")}
-    c = paper.get_c_from_data(beta, sigma)  # beta : meV/nm^2, sigma nm-1
+    results = {'length': (length, "nm"),
+               'beta': (beta, "meV/nm"),
+               'sigma': (sigma, "nm")}
+    c = paper.get_c_from_data(beta, sigma)  # beta : meV/nm, sigma nm-1
     # c = paper.get_c_from_data(190, np.sqrt(78.1))
     c0 = paper.get_C0_from_c(c)  # meV/nm
     print("C_0 = {} eV/A".format(round(c0 * 1e-4, 5)))
@@ -196,7 +197,7 @@ if __name__ == "__main__":
     regions = [REGION]
     # region = _all_regions()
     # edges = EDGE
-    edges = ["edge 111"]  # , "edge 2", "edge 3"]
+    edges = EDGE
     # edges = _all_edges(regions)
     make_directories(regions, edges)
 
@@ -211,8 +212,8 @@ if __name__ == "__main__":
         if do_analysis:
             for edge in edges:
                 res_path = os.path.join(RESULTS_FOLDER, region, edge)
-                # sigma = distribution_analysis(res_path, adjusted=False)
-                beta = fft_analysis(res_path, adjusted=False, full=False)
-                # get_correlations(res_path,  fps=15, adjusted=False)
-                # draw_analyzed_edge(res_path, region)
-                # get_paper_results(res_path, beta=beta, sigma=sigma)
+                sigma = distribution_analysis(res_path, adjusted=False)
+                beta, L = fft_analysis(res_path, adjusted=False)
+                get_correlations(res_path, fps=15, adjusted=False)
+                draw_analyzed_edge(res_path, region)
+                get_paper_results(res_path, beta=beta, sigma=sigma, length=L)

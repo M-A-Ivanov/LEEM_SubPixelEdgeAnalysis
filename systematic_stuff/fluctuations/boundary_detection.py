@@ -1,10 +1,12 @@
+import json
 import os
 from typing import List
 
 from matplotlib import pyplot as plt
 from scipy import optimize
 
-from global_parameters import CANNY_SIGMA, MASK_SIZE
+from edge_processing import EdgeAnalyzer
+from global_parameters import CANNY_SIGMA, MASK_SIZE, HIST_EQUAL, SuccessTracker
 from global_paths import SRC_FOLDER, TARGET_FOLDER, REGION, save_pickle, load_pickle, EDGE
 from edge_segmentation import EdgeContainer, ImageMasker
 from image_processing import ImageProcessor, average_images
@@ -17,31 +19,6 @@ from scipy.optimize import OptimizeWarning
 warnings.simplefilter("error", OptimizeWarning)
 
 
-def try_canny_detection():
-    edge = "edge 15"
-    reader = RawReader()
-    processor = ImageProcessor()
-    image_align = reader.read_single(os.path.join(SRC_FOLDER, REGION), frames=0).data
-    processor.load_image(image_align)
-    processor.align(preprocess=True)
-
-    image = reader.read_single(os.path.join(SRC_FOLDER, REGION)).data
-
-    processor.load_image(image)
-
-    processor.align(preprocess=True)
-    if edge:
-        load_pickle(os.path.join(TARGET_FOLDER, edge, "mask.pickle"))
-    mask = processor.get_mask(5)
-    mask = processor.cut_to_mask(mask)
-    processor.clahe_hist_equal()
-    processor.denoise_nlm(fast=True)
-    processor.canny_edges(sigma=0.5, mask=mask)
-    # processor.subpixel_edges(mask=None)
-    processor.clean_up(5)
-    processor.figure_all()
-
-
 def try_canny_devernay_detection(edge=None):
     reader = RawReader()
     processor = ImageProcessor()
@@ -49,7 +26,7 @@ def try_canny_devernay_detection(edge=None):
     processor.load_image(image_align)
     processor.align(preprocess=False)
 
-    image = reader.read_single(os.path.join(SRC_FOLDER, REGION), frames=1000).data
+    image = reader.read_single(os.path.join(SRC_FOLDER, REGION), frames=1788).data
 
     processor.load_image(image)
 
@@ -59,12 +36,13 @@ def try_canny_devernay_detection(edge=None):
     else:
         mask = processor.get_mask(MASK_SIZE)
     local_mask = processor.cut_to_mask(mask)
-    processor.global_hist_equal(local_mask)
+    processor.normalize()
     processor.denoise_bilateral()
     coords = processor.canny_devernay_edges(sigma=CANNY_SIGMA, mask=local_mask)
-    coords = processor.clean_up_coordinates(coords, 5)
+    coords = processor.clean_up_coordinates(coords, 15)
     processor.plot_all()
-    processor.revert(4)
+    perp_create = EdgeAnalyzer(edges=[coords])
+    perp_create.get_perpendiculars_adaptive(pixel_average=32)
 
 
 def try_tanh_detection():
@@ -121,6 +99,17 @@ class FluctuationsDetector:
         self.target_folder = target_folder
         self.edges_names = edges
         self.image_processor = ImageProcessor()
+        self.canny_sigma = None
+        self.mask_size = None
+        self.detection_parameters = None
+        self.set_parameters(CANNY_SIGMA, MASK_SIZE)
+        self.success_rate = SuccessTracker()
+
+    def set_parameters(self, canny_sigma, mask_size):
+        self.detection_parameters = {"Canny_sigma": canny_sigma,
+                                     "Mask_size": mask_size}
+        self.canny_sigma = canny_sigma
+        self.mask_size = mask_size
 
     def prepare_detector(self):
         reader = RawReader()
@@ -152,7 +141,30 @@ class FluctuationsDetector:
     def _load_masks(self):
         return [load_pickle(os.path.join(self.target_folder, edge, "mask.pickle")) for edge in self.edges_names]
 
-    def many_edge_canny_devernay_detection(self, load_masks: bool = True, num_images: int = None):
+    def prepare_masks(self, load):
+        if load:
+            masks = self._load_masks()
+        else:
+            masks = [self.image_processor.get_mask(self.mask_size) for _ in self.edges_names]
+            self._save_masks(masks)
+        return masks
+
+    def canny_detection_step(self, mask):
+        if HIST_EQUAL == "CLAHE":
+            self.image_processor.clahe_hist_equal()
+        elif HIST_EQUAL == "GLOBAL":
+            self.image_processor.global_hist_equal(mask)
+        else:
+            self.image_processor.normalize()
+        self.detection_parameters["Hist_equalization"] = self.image_processor.titles[-1]
+        self.image_processor.denoise_bilateral()
+        self.detection_parameters["Denoising"] = self.image_processor.titles[-1]
+        coordinates = self.image_processor.canny_devernay_edges(mask=mask, sigma=self.canny_sigma)
+        coordinates = self.image_processor.clean_up_coordinates(coordinates, 15)
+        self.image_processor.revert(4)
+        return coordinates
+
+    def many_edge_canny_devernay_detection(self, load_masks: bool = False, num_images: int = None):
         """Algorithm 1: Choosing the location of step/boundary. This algorithm:
                             * Loads raw .dat images from 'folder_src'
                             * For the first image loaded:
@@ -168,80 +180,30 @@ class FluctuationsDetector:
                             * Save all coordinates in shape [frames, array(n_points, 2)]
                                 N.B. Array of coordinates is arranged like : (y-coordinate, x-coordinate)
         """
+
         list_of_images = self.load_data(num_images)
         self.image_processor.load_image(list_of_images[0].data)
         self.image_processor.align(preprocess=False)
-        if load_masks:
-            masks = self._load_masks()
-        else:
-            masks = [self.image_processor.get_mask(MASK_SIZE) for _ in self.edges_names]
-            self._save_masks(masks)
+        masks = self.prepare_masks(load_masks)
         groupers_canny = [EdgeContainer() for _ in self.edges_names]
         print("Found images: {}".format(len(list_of_images)))
         for i, image in enumerate(tqdm(list_of_images)):
-            # time = round((image.metadata['timestamp'] - first_image_time).total_seconds(), 3)
             try:
                 self.image_processor.load_image(image.data)
                 self.image_processor.align(preprocess=False)
                 for original_mask, grouper_canny in zip(masks, groupers_canny):
-                    mask = self.image_processor.cut_to_mask(original_mask)
-                    self.image_processor.global_hist_equal(mask)
-                    self.image_processor.denoise_bilateral()
-                    coordinates = self.image_processor.canny_devernay_edges(mask=mask, sigma=CANNY_SIGMA)
-                    coordinates = self.image_processor.clean_up_coordinates(coordinates, 10)
+                    cut_mask = self.image_processor.cut_to_mask(original_mask)
+                    coordinates = self.canny_detection_step(cut_mask)
+                    self.image_processor.revert()
                     grouper_canny.append_edges(coordinates)
-                    self.image_processor.revert(5)  # TODO: autoreverter using Enum for processes?
             except Exception as e:
                 print("Frame {} failed with: {}".format(i, e))
         for edge, grouper_canny, mask in zip(self.edges_names, groupers_canny, masks):
-            print(edge)
             path = os.path.join(self.target_folder, edge)
             os.makedirs(path, exist_ok=True)
             grouper_canny.save_coordinates(path, suffix="canny_devernay")
-
-    def canny_detection(self, load_masks=True, num_images=None):
-        """Algorithm 1: Choosing the location of step/boundary. This algorithm:
-                            * Loads raw .dat images from 'folder_src'
-                            * For the first image loaded:
-                                - Saves alignment template (middle 1/2 of image area)
-                                - Lets user choose the boundary to isolate by drawing a mask through clicks
-                                - Save masks as binary arrays
-                            * For every image loaded:
-                                - Align using template
-                                - Zoom into mask
-                                - "Globally" equalize histogram (practically, that's local)
-                                - Denoise image (usually, using Non-local means, but other methods available)
-                                - Detect edge using Canny edge & collect coordinates
-                            * Save all coordinates in shape [frames, array(n_points, 2)]
-                                N.B. Array of coordinates is arranged (y-coordinate, x-coordinate)
-        """
-        mask_size = 12
-        list_of_images = self.load_data(num_images)
-        self.image_processor.load_image(list_of_images[0].data)
-        self.image_processor.align(preprocess=True)
-        masks = self.get_masks(load=load_masks, mask_size=mask_size)
-        groupers_canny = [EdgeContainer() for _ in self.edges_names]
-        print("Found images: {}".format(len(list_of_images)))
-        for i, image in enumerate(tqdm(list_of_images)):
-            # time = round((image.metadata['timestamp'] - first_image_time).total_seconds(), 3)
-            try:
-                self.image_processor.load_image(image.data)
-                self.image_processor.align(preprocess=True)
-                for original_mask, grouper_canny in zip(masks, groupers_canny):
-                    mask = self.image_processor.cut_to_mask(original_mask)
-                    self.image_processor.global_hist_equal()
-                    self.image_processor.denoise_nlm(fast=True)
-                    self.image_processor.canny_edges(mask=mask, sigma=0.75)
-                    self.image_processor.clean_up(10)
-                    grouper_canny.append_edges(self.image_processor.edge_result())
-                    self.image_processor.revert(5)
-            except Exception as e:
-                print("Frame {} failed with: {}".format(i, e))
-        for edge, grouper_canny, mask in zip(self.edges_names, groupers_canny, masks):
-            print(edge)
-            path = os.path.join(self.target_folder, edge)
-            os.makedirs(path, exist_ok=True)
-            grouper_canny.save_coordinates(path, suffix="canny")
+            with open(os.path.join(path, "detection_parameters.json"), 'w', encoding='utf-8') as f:
+                json.dump(self.detection_parameters, f, ensure_ascii=False, indent=4)
 
     def simple_tanh_detect(self, num_images=None):
         def tanh(x, a, eta, phi, b):
@@ -259,7 +221,7 @@ class FluctuationsDetector:
             for original_mask, grouper_canny in zip(masks, groupers_canny):
                 mask = self.image_processor.cut_to_mask(original_mask)
                 self.image_processor.global_hist_equal()
-                self.image_processor.denoise_nlm(fast=True)
+                self.image_processor.denoise_bilateral()
                 image = self.image_processor.result()
                 edge = np.zeros((image.shape[0], 2))
                 for x_coordinate in range(image.shape[0]):

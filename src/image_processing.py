@@ -76,7 +76,9 @@ class ImageProcessor(ImageRecorder):
         else:
             self.titles = ['Original']
 
-    def result(self):
+    def result(self, uint8=False):
+        if uint8:
+            return img_as_ubyte(self.images[-1])
         return self.images[-1]
 
     def edge_result(self):
@@ -86,6 +88,10 @@ class ImageProcessor(ImageRecorder):
         for step in range(n_steps):
             del self.images[-1]
             del self.titles[-1]
+
+    def revert_to(self, step):
+        while len(self.images) > step:
+            self.revert()
 
     def to_uint8(self):
         self.images.append(img_as_ubyte(self.images[-1]))
@@ -260,7 +266,7 @@ class ImageProcessor(ImageRecorder):
                                                 sigma=sigma, mask=mask)
         self.images.append(bool_mask)
         self.edges = self.cut_to_global_coordinates(self.boolean_image_to_coordinates(self.images[-1]))
-        self.titles.append("Detected Edges, Canny-Devernay")
+        self.titles.append("Canny-Devernay")
 
         return self.cut_to_global_coordinates(coordinates)
 
@@ -379,6 +385,12 @@ class ImageProcessor(ImageRecorder):
         self.images.append(morphology.binary_dilation(self.images[-1], selem=selem))
         self.titles.append("Closed Area Edges")
 
+    def normalize(self):
+        img = self.images[-1]
+        normalized = (img - np.min(img)) / (np.max(img) - np.min(img))
+        self.images.append(normalized)
+        self.titles.append("Linearly Normalized")
+
     def local_hist_equal(self, disk_size=15):
         selem = io.morphology.disk(disk_size)
         self.images.append(io.filters.rank.equalize(self.images[-1], selem=selem))
@@ -393,7 +405,7 @@ class ImageProcessor(ImageRecorder):
             self.images.append(exposure.equalize_adapthist(self.images[-1], kernel_size=kernel_size))
         else:
             self.images.append(exposure.equalize_adapthist(self.images[-1]))
-        self.titles.append("CLAHE Equalized Hist")
+        self.titles.append("CLAHE")
 
     def estimate_noise(self):
         return estimate_sigma(self.images[-1])

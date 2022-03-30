@@ -18,8 +18,8 @@ from tqdm import tqdm
 from data_analysis import FFTResults, DistributionResults, ExperimentalDistributionResults, ExperimentalFFTResults
 from data_experiments import experimental_manual_masking, load_experimental_images
 from edge_processing import EdgeAnalyzer
-from global_paths import SRC_FOLDER, REGION, RESULTS_FOLDER, AxisNames
-from global_parameters import pixel
+from global_paths import SRC_FOLDER, REGION, RESULTS_FOLDER
+from global_parameters import pixel, AxisNames, CANNY_SIGMA
 from image_processing import ImageProcessor, BackgroundRemover
 from raw_reader import RawReader
 from systematic_stuff.convenience_functions import raw_to_video
@@ -63,7 +63,7 @@ class FigureCreator:
     def _preprocess_image(self, image):
         self.image_process.load_image(image)
         self.image_process.clahe_hist_equal()
-        self.image_process.align(preprocess=True)
+        self.image_process.align(preprocess=False)
         return self.image_process.result()
 
     def _prepare_image(self, frame=0):
@@ -231,8 +231,8 @@ class FigureCreator:
         self.image_process.load_image(self.images)
         mask = self.load_mask()
         new_mask = self.image_process.cut_to_mask(mask)
-        self.image_process.global_hist_equal()
-        self.image_process.denoise_nlm()
+        self.image_process.normalize()
+        self.image_process.denoise_bilateral()
         edge_coords = self.coordinates[frame]
         edge_coords = np.subtract(edge_coords, np.roll(self.image_process.cut_corrections, 1, axis=0))
         image = self._draw_edge(self.image_process.result(), edge_coordinates=edge_coords, color="lawngreen", alpha=0.4)
@@ -242,7 +242,7 @@ class FigureCreator:
         for perp in self.edge_process.perpendiculars:
             perp.mid = np.subtract(perp.mid, np.roll(self.image_process.cut_corrections, 1, axis=0))
             perp.second = np.subtract(perp.second, np.roll(self.image_process.cut_corrections, 1, axis=0))
-        self._select_perpendiculars(n_perps=172)
+        self._select_perpendiculars(n_perps=128)
         self.draw_perpendiculars(alpha=0.3, line_thickness=2, color="darkred")
         self._select_perpendiculars(n_perps=1)
         self.draw_perpendiculars(alpha=0.9, line_thickness=3, color="red", linestyle='--')
@@ -418,23 +418,24 @@ class FigureCreator:
         self.image_process.load_image(self.images)
         self.image_process.align(preprocess=True)
         image = self.image_process.result().copy()
-        # mask = self.load_mask()
-        mask = self.image_process.get_mask(8)
+        mask = self.load_mask()
+        # mask = self.image_process.get_mask(8)
         new_mask = self.image_process.cut_to_mask(mask)
         # fig, ax = plt.subplots(nrows=4, ncols=2, gridspec_kw={'height_ratios': [4, 1, 1, 1]})
         rcParams['axes.titlepad'] = 1
         rcParams['axes.titlesize'] = 8
-        gs = GridSpec(3, 2, wspace=0.05, hspace=0.1)
+        gs = GridSpec(1, 5, wspace=0.25, hspace=0.15)
         fig = plt.figure()
 
         raw_img_trim = 50
-        ax = [fig.add_subplot(gs[:, 0]), fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[1, 1]),
-              fig.add_subplot(gs[2, 1])]
+        ax = [fig.add_subplot(gs[0, :2]), fig.add_subplot(gs[0, 2]), fig.add_subplot(gs[0, 3]),
+              fig.add_subplot(gs[0, 4])]
         rect = self._get_rectangle(cv2.UMat(mask.copy().astype(np.uint8)), rotated=True)
         rect = tuple((tuple(np.array(rect[0]) - raw_img_trim), rect[1], rect[2]))
         self._draw_rectangle(rect, line_thickness=1, color="sandybrown", ax=ax[0])
         ax[0].imshow(image[raw_img_trim:-raw_img_trim, raw_img_trim:-raw_img_trim], cmap="gray")
-        ax[0].add_artist(ScaleBar(3, "nm", length_fraction=0.3, location="lower left", color="goldenrod", frameon=False,
+        ax[0].add_artist(ScaleBar(pixel, "nm", length_fraction=0.3, width_fraction=0.02,
+                                  location="lower left", color="goldenrod", frameon=False,
                                   font_properties={"size": 10}))
         # ax[0].axis("equal")
         ax[0].axis("off")
@@ -442,17 +443,17 @@ class FigureCreator:
         self.image_process.clahe_hist_equal()
         ax[1].imshow(self.image_process.result(), cmap="gray")
         ax[1].title.set_text(self.image_process.titles[-1])
-        ax[1].add_artist(ScaleBar(3, "nm", length_fraction=0.25, width_fraction=0.05,
+        ax[1].add_artist(ScaleBar(pixel, "nm", length_fraction=0.8, width_fraction=0.02,
                                   location="lower left", color="goldenrod", frameon=False,
                                   font_properties={"size": 10}))
         # ax[1].axis("equal")
         ax[1].axis("off")
-        self.image_process.denoise_nlm(fast=True)
+        self.image_process.denoise_bilateral()
         ax[2].imshow(self.image_process.result(), cmap="gray")
         ax[2].title.set_text(self.image_process.titles[-1])
         # ax[2].axis("equal")
         ax[2].axis("off")
-        self.image_process.canny_edges(sigma=0.25, mask=new_mask)
+        self.image_process.canny_devernay_edges(sigma=CANNY_SIGMA, mask=new_mask)
         self.image_process.clean_up(15)
         ax[3].title.set_text(self.image_process.titles[-2])
         ax[3].imshow(self.image_process.result(), cmap="gray")
@@ -464,6 +465,7 @@ class FigureCreator:
         os.makedirs(path, exist_ok=True)
         plt.savefig(os.path.join(path, "frame_{}.png".format("detection")), dpi=1024)
         plt.show()
+        plt.close()
 
     def fluctuations_video(self):
         self._load_images(frame=None)
@@ -476,7 +478,7 @@ class FigureCreator:
             for i, raw in enumerate(tqdm(self.images[:50])):
                 self.image_process.load_image(raw, label=i)
                 self.image_process.align(preprocess=True)
-                _ = self.image_process.cut_to_mask(mask)
+                smol_mask = self.image_process.cut_to_mask(mask)
                 self.image_process.clahe_hist_equal()
                 shape = self.image_process.result().shape
                 image = resize(self.image_process.result(), (4 * shape[0], 4 * shape[1]))
@@ -802,14 +804,14 @@ def analysis_vs_averaging():
 
 def analysis_vs_experiment_duration():
     region = REGION
-    edge = "edge 12"
-    length_frac = [1, 0.7, 0.5, 0.2, 0.1]
+    edge = "edge 1"
+    length_frac = [1, 0.5, 0.25, 0.1, 0.01, 0.005]
     res_path = os.path.join(RESULTS_FOLDER, region, edge)
     picklepath = os.path.join(res_path, "offsets_original.pickle")
     with open(picklepath, "rb") as f:
         offsets, lengths = pickle.load(f)
-    length = np.average(lengths) * pixel
-    fig, ax = plt.subplots(2, 1)
+    length = np.average(lengths)
+    fig, ax = plt.subplots(1, 2)
     for frac in length_frac:
         if frac == 1:
             shortened_offsets = offsets
@@ -821,16 +823,15 @@ def analysis_vs_experiment_duration():
         x, n, gauss_x, gauss, mean, std = distribution_analyzer.get_distribution()
         ax[1].scatter(x, n, alpha=0.4, label="duration fraction: {}".format(frac))
         ax[1].plot(gauss_x, gauss, alpha=0.8, label="duration fraction: {}".format(frac))
-        ax[1].set_xlim(-15, 15)
+        # ax[1].set_xlim(-15, 15)
         handles, labels = plt.gca().get_legend_handles_labels()
         by_label = dict(zip(labels, handles))
         ax[1].legend(by_label.values(), by_label.keys())
         ax[1].set_aspect('auto')
         ax[1].set(xlabel=AxisNames.distr()["x"], ylabel=AxisNames.distr()["y"])
         n, q, y_q_msa = fft_analyser.get_y_q_msa()
-        n = n[1:20]
-        proportional_q = (1. / q[n]) ** 2
-        ax[0].plot(proportional_q, y_q_msa[n], marker='o', alpha=0.8, label="duration fraction: {}".format(frac))
+        y_q_msa = y_q_msa
+        ax[0].plot(1/(q**2), y_q_msa, marker='o', alpha=0.8, label="duration fraction: {}".format(frac))
         ax[0].legend()
         ax[0].set_aspect('auto')
         ax[0].set(xlabel=AxisNames.fft()["x"], ylabel=AxisNames.fft()["y"])
@@ -962,7 +963,12 @@ if __name__ == '__main__':
     region = REGION
     edge = "edge 1"
     fig = FigureCreator(region, edge)
-    fig.fluctuations_video()
+    fig.draw_figure_4_main()
+    # fig.draw_figure_1()
+    # fig.draw_figure_2()
+    # fig.draw_figure_3()
+    # fig.draw_figure_4()
+    # fig.fluctuations_video()
     # analysis_vs_cap_in_amplitude()
-    # analysis_vs_experiment_duration()
+    analysis_vs_experiment_duration()
     # show_detection()
