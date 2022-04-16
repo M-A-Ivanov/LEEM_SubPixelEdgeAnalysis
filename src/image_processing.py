@@ -12,7 +12,7 @@ import skimage as io
 from scipy import optimize
 from skimage.morphology import disk
 from skimage.filters import rank, threshold_otsu
-from skimage import exposure, img_as_float, img_as_ubyte
+from skimage import exposure, img_as_float, img_as_ubyte, img_as_uint
 from skimage import feature
 from skimage import filters
 from skimage import transform
@@ -76,8 +76,8 @@ class ImageProcessor(ImageRecorder):
         else:
             self.titles = ['Original']
 
-    def result(self, uint8=False):
-        if uint8:
+    def result(self, uint16=False):
+        if uint16:
             return img_as_ubyte(self.images[-1])
         return self.images[-1]
 
@@ -227,7 +227,7 @@ class ImageProcessor(ImageRecorder):
             resize(self.images[-1], (factor * self.images[-1].shape[0], factor * self.images[-1].shape[1])))
         self.titles.append("Upscaled")
         if mask is not None:
-            return resize(mask, (factor * mask.shape[0], factor * mask.shape[1]), order=0).astype(int)
+            return resize(mask, (factor * mask.shape[0], factor * mask.shape[1]), order=0).astype(bool)
 
     def find_contours(self, show=True, savefig=None):
         contours = measure.find_contours(self.images[-1], threshold_otsu(self.images[-1]))

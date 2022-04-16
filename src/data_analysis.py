@@ -2,13 +2,14 @@ import os
 import pickle
 from typing import List
 
+import matplotlib
 import numpy as np
 from scipy import stats, optimize, spatial, fft, fftpack, signal
 import matplotlib.pyplot as plt
 from statsmodels.tsa.stattools import acf
 
 from global_paths import DANIDATA_PATH, RESULTS_FOLDER, REGION, EDGE
-from global_parameters import pixel, AxisNames
+from global_parameters import pixel, AxisNames, CANNY_SIGMA, Constants
 import json
 
 
@@ -95,7 +96,7 @@ class FFTResults(Results):
         return y_q[:y_q.shape[0] // 2, ]
 
     def get_fft(self):
-        return self.fourier_transform(self.positions)
+        return (1 / self.length) * self.fourier_transform(self.positions)
         # return self.manual_fft(self.positions)  # no longer: (1 / np.sqrt(self.length)) - for units reasons
 
     def get_y_q_msa(self):
@@ -110,14 +111,34 @@ class FFTResults(Results):
 
     def _apply_gauss_factor(self, y):
         real_q = 2 * np.pi * np.arange(len(y)) / self.length
-        gaussian_factor_ampl = np.exp(-(1) * real_q * real_q / 8)  # * pixel * pixel
+        gaussian_factor_ampl = np.exp(-(CANNY_SIGMA) * real_q * real_q / 8)  # * pixel * pixel
         return y * gaussian_factor_ampl
 
-    def get_analysis(self):
+    def fit_and_plot(self, q, y, suffix, ax=None):
+        slope, intercept, _, _, _ = stats.linregress(q, y)
+        print(suffix + " slope = {} \n intercept = {}".format(round(slope, 5), round(intercept, 5)))
+        if ax is not None:
+            ax_fit = ax
+        else:
+            fig_small, ax_fit = plt.subplots()
+        ax_fit.plot(q, (slope * q + intercept), color='b')
+
+        ax_fit.scatter(q, y, facecolors='none', edgecolors='k', marker='o', alpha=0.8)
+        ax_fit.set(xlabel=AxisNames.fft()["x"], ylabel=AxisNames.fft()["y"])
+        ax_fit.ticklabel_format(style='sci', scilimits=(0, 0), useMathText=True)
+        if ax is None:
+            fig_small.tight_layout()
+            fig_small.savefig(os.path.join(self.results_path, 'fft_fig_weno{}.png'.format(suffix)), dpi=1000,
+                              transparent=False)
+            plt.close(fig_small)
+        return slope, intercept
+
+    def get_analysis(self, ax=None):
         print("L={}".format(round(self.length * pixel, 2)))
 
         full_n, full_q, y_q_msa = self.get_y_q_msa()
         ### Pixel to nm happens here:
+        self.length = self.length * pixel
         full_q = full_q / pixel
         y_q_msa = y_q_msa * pixel * pixel
         sel_region = np.where(full_q < 0.15)
@@ -126,27 +147,13 @@ class FFTResults(Results):
         sel_prop_q = proportional_q[sel_region]
         y_q_msa = 1. / y_q_msa
         selected_y = y_q_msa[sel_n - 1]
-
-        for q, y, suffix in zip([proportional_q, sel_prop_q],
-                                [y_q_msa, selected_y],
-                                ["_full", "_partial"]):
-            slope, intercept, _, _, _ = stats.linregress(q, y)
-            print("slope = {} \n intercept = {}".format(round(slope, 5), round(intercept, 5)))
-            fig, ax = plt.subplots()
-            ax.plot(q, (slope * q + intercept), color='b')
-
-            ax.scatter(q, y, facecolors='none', edgecolors='k', marker='o', alpha=0.8)
-            ax.set(xlabel=AxisNames.fft()["x"], ylabel=AxisNames.fft()["y"])
-            plt.tight_layout()
-            plt.savefig(os.path.join(self.results_path, 'fft_fig_weno{}.png'.format(suffix)), dpi=1000,
-                        transparent=False)
-            plt.close()
-
+        slope, intercept = self.fit_and_plot(sel_prop_q, selected_y, "_partial", ax)
+        self.fit_and_plot(full_q, y_q_msa, "_full")
         k_B = 8.617e-2
         T = 550 + 273.15
-        beta = k_B * T / (self.length * slope)
+        beta = k_B * T * slope / self.length
         print("beta = {}".format(round(beta, 3)))
-        return beta, self.length * pixel
+        return beta, self.length
 
     def _q_selector(self, wavelength):
         return int(self.length / (2 * np.pi * wavelength))
@@ -248,7 +255,7 @@ class DistributionResults(Results):
     def get_distribution(self):
         data = self.positions.flatten()
         # bins = int(8 * (np.max(data) - np.min(data)))
-        bins = np.floor(np.max(data) - np.min(data)/(2.4/6)).astype(int)
+        bins = np.floor(np.max(data) - np.min(data) / (2.4 / 6)).astype(int)
         n, bin_edges = np.histogram(data, bins=bins, density=True)  # either True or next line normalization
         x = .5 * (bin_edges[1:] + bin_edges[:-1])
         gauss_x = np.linspace(np.min(x), np.max(x), 1000)
@@ -257,16 +264,17 @@ class DistributionResults(Results):
         gauss = stats.norm.pdf(gauss_x, mean, std)
         return x, n, gauss_x, gauss, mean, std
 
-    def get_analysis(self):
+    def get_analysis(self, ax):
         x, n, gauss_x, gauss, mean, std = self.get_distribution()
         # Pixel to nm happens here:
         x = x * pixel
         gauss_x = gauss_x * pixel
         mean = mean * pixel
         std = std * pixel
-        fig, ax = plt.subplots()
-        plt.plot(gauss_x, gauss, color='b')
-        plt.scatter(x, n, facecolors='none', edgecolors='k', marker='o', alpha=0.8)
+        if ax is None:
+            fig, ax = plt.subplots()
+        ax.plot(gauss_x, gauss, color='b')
+        ax.scatter(x, n, facecolors='none', edgecolors='k', marker='o', alpha=0.8)
         # axis_lim = np.min((abs(np.min(x)), abs(np.max(x))))
         # if axis_lim > 15:
         #     axis_lim = 15
@@ -274,9 +282,10 @@ class DistributionResults(Results):
         ax.set_xlim(-axis_lim, axis_lim)
         # plt.ylim(0, 0.2)
         ax.set(xlabel=AxisNames.distr()["x"], ylabel=AxisNames.distr()["y"])
-        plt.savefig(os.path.join(self.results_path, 'distr_fig.png'), dpi=1000, transparent=False)
-        # plt.show()
-        plt.close()
+        if ax is None:
+            plt.savefig(os.path.join(self.results_path, 'distr_fig.png'), dpi=1000, transparent=False)
+            # plt.show()
+            plt.close()
         return mean, std
 
 
@@ -290,22 +299,24 @@ class ExperimentalDistributionResults(DistributionResults):
 class PaperAnalysis:
     @staticmethod
     def get_c_from_data(beta, sigma):
-        k_B = 8.617e-2  # meV/K
-        T = 550 + 273.15  # K
+        k_B = Constants.k_B  # meV/K
+        T = Constants.T  # K
         # T = 1135  # Si
 
         c = (k_B * k_B * T * T) / (8 * beta * sigma ** 4)
         # C_0 = (w * w / np.pi ** 2) * c / (1 + np.tan(0. * np.pi / 2) ** 2)
         return c  # meV/nm^3
 
-    def get_C0_from_c(self, c):
-        w = 165  # nm, width of terraces
+    @staticmethod
+    def get_C0_from_c(c):
+        w = Constants.w  # nm, width of terraces
         return c * ((w * w) / (np.pi * np.pi))  # meV/nm
 
-    def get_stress_from_C0(self, c0):
-        M = 0.53  # ev/A^3, Young's modulus
+    @staticmethod
+    def get_stress_from_C0(c0):
+        M = Constants.M
         # M = 1  # Si
-        ni = 0.31  # Poisson ratio
+        ni = Constants.ni
         # ni = 0.27  # Si
         c0 = c0 * 1e-4  # meV/nm to eV/A
 
@@ -313,14 +324,15 @@ class PaperAnalysis:
 
         return stress
 
-    def get_entropy_from_C0(self, c0):
+    @staticmethod
+    def get_entropy_from_C0(c0):
         c0 = c0 * 1e-4  # meV/nm to eV/A
-        dS_over_c0 = 1.1905 * 1e-4  # K-1.micron-1 to K-1.A-1
+        dS_over_c0 = 8.928617697279089e-05  # K-1.A-1
         return c0 * dS_over_c0
 
     @staticmethod
     def do_hannon_fit():
-        L = 1650.  # angstrom
+        L = Constants.w * 10  # in angstrom
         path = os.path.join(DANIDATA_PATH, "danidata.csv")
         with open(path, 'r', encoding='utf-8-sig') as csv_file:
             data = np.genfromtxt(csv_file, delimiter=',', encoding="utf8")
@@ -329,14 +341,14 @@ class PaperAnalysis:
 
         def hannon_eqn(tan_p, dS, Cm, Cd, Cr, const):
             p = (2. / np.pi) * np.arctan(tan_p)
-            return (2. / dS) * (-(np.pi * Cm * tan_p / L)
-                                - (np.pi * Cd / (2 * L * L)) * (1. / (np.cos(p * np.pi / 2) ** 2))
-                                - (16 * Cr / (L ** 3)) * ((1 / ((1 - p) ** 3)) - (1 / ((1 + p) ** 3)))) + const
+            return -(2. / dS) * ((np.pi * Cm * tan_p / L)
+                                 + (np.pi * Cd / (2 * L * L)) * (1. / (np.cos(p * np.pi / 2) ** 2))
+                                 + (16 * Cr / (L ** 3)) * ((1 / ((1 - p) ** 3)) - (1 / ((1 + p) ** 3)))) + const
 
         # guess = [0.00031 * 0.12 * 2 * np.pi / 3000, 0.00031, 0.81, 8.6, 10]  # Hannon's
-        guess = [4e-7, 0.00433, 1, 10, 10]
-        param_bounds = (np.array([1e-9, 1e-4, 1e-2, 1e-1, 1e-1]),
-                        np.array([1e-5, 1e-1, 10, 100, 100]))
+        guess = [4e-7, 0.013, 1, 10, 10]
+        param_bounds = (np.array([4e-8, 1e-3, 1e-3, 1e-1, 0]),
+                        np.array([6e-7, 3e-2, 100, 100, 1000]))
 
         coeff, var_matrix = optimize.curve_fit(hannon_eqn, tanp, T, p0=guess, bounds=param_bounds)
         print(coeff)
@@ -350,8 +362,8 @@ class PaperAnalysis:
         linear_region_tanp = tanp[np.where((T > linear_region[0]) & (T < linear_region[1]))]
 
         slope, intercept, _, _, _ = stats.linregress(linear_region_T, linear_region_tanp)
-        print("slope = {}, intercept = {}, dS/C2 = {}".format(slope, intercept, 1e4 * slope * (-2 * np.pi / L)))
-        fig = plt.figure(figsize=(5, 6))
+        print("slope = {}, intercept = {}, dS/C2 = {}".format(slope, intercept, slope * (-2 * np.pi / L)))
+        fig = plt.figure()
         ax = fig.add_subplot(111)
         ax.set_aspect(25)
         ax.set_ylabel(r"$\tan(\dfrac{p\pi}{2})$")
@@ -372,8 +384,7 @@ class PaperAnalysis:
         # plt.close()
         os.makedirs(os.path.join(RESULTS_FOLDER, "for_figures"), exist_ok=True)
         plt.savefig(os.path.join(RESULTS_FOLDER, "for_figures", "hannon_fit.png"),
-                    dpi=1000, transparent=True,
-                    # bbox_inches='tight',
+                    dpi=2048, transparent=False,
                     )
         # np.savetxt("E:\\results\\output.csv", np.column_stack((fit, tanp_cont)), delimiter=",")
 
@@ -386,14 +397,15 @@ class PaperAnalysis:
             sixbysix = data[:, 1]
             eightbytwo = data[:, 2]
 
-        plt.figure(figsize=(8, 6))
+        plt.figure(figsize=(6, 4))
         plt.scatter(T, eightbytwo, edgecolors='k', facecolors='none')
         plt.scatter(T, sixbysix, color='k')
         plt.xlabel(r"$T \; \; (^{\circ}$C)")
         plt.ylabel(r"Phase coverage (%)")
 
         os.makedirs(os.path.join(RESULTS_FOLDER, "for_figures"), exist_ok=True)
-        plt.savefig(os.path.join(RESULTS_FOLDER, "for_figures", "coverage_proportions.png"), dpi=1000, transparent=True)
+        plt.savefig(os.path.join(RESULTS_FOLDER, "for_figures", "coverage_proportions.png"), dpi=2048,
+                    transparent=False)
         # plt.show()
         # plt.close()
 
@@ -437,8 +449,7 @@ class SummingUp:
 
 if __name__ == '__main__':
     """Currently, experiment with shortening the duration."""
-    # pa = PaperAnalysis()
-    # pa.do_hannon_fit()
-    total = SummingUp(RESULTS_FOLDER)
-    total.extract_results()
-
+    pa = PaperAnalysis()
+    pa.do_hannon_fit()
+    # total = SummingUp(RESULTS_FOLDER)
+    # total.extract_results()

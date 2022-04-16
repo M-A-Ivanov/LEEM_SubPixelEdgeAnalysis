@@ -232,7 +232,7 @@ class PerpendicularProj(Perpendicular):
         return interpolate.interp1d(points[:, 0], points[:, 1], kind="linear")
 
     def project_weno(self, points, are_local=False):
-        n_points = 16
+        n_points = 32
         points = np.array(points, dtype=float)
         if not are_local:
             points = self._to_local_coordinate_system(points, n_closest=n_points)
@@ -261,17 +261,10 @@ class PerpendicularAdjuster(PerpendicularProj):
         self.found_adjustments = []
         self.image_processor = ImageProcessor()
 
-    def get_profile_around_detection(self, image, detection, radius, preprocess_locally):
-        if preprocess_locally:
-            frame_image, _ = self.get_local_image(image, radius=radius, offset_to_mid=detection)
-            self.image_processor.load_image(frame_image)
-            self.image_processor.global_hist_equal()
-            pt1 = radius * (1 + self.get_perp_direction())
-            pt2 = radius * (1 - self.get_perp_direction())
-        else:
-            self.image_processor.load_image(image)
-            pt1 = self.get_point_at_dist(radius + detection)
-            pt2 = self.get_point_at_dist(-radius + detection)
+    def get_profile_around_detection(self, image, detection, radius):
+        self.image_processor.load_image(image)
+        pt1 = self.get_point_at_dist(radius + detection)
+        pt2 = self.get_point_at_dist(-radius + detection)
         profile_line = self.image_processor.get_profile(pt2, pt1)
         profile_line = profile_line[(len(profile_line) - 2 * radius):]
         x_pixel = np.arange(-radius, radius)

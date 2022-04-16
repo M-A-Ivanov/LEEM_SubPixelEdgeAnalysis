@@ -49,9 +49,14 @@ class RawReader:
         elif file_path.endswith('.tif'):
             return TIFFImage(file_path)
 
-    def read_folder(self, folder_path, every_nth=None):
+    def read_folder(self, folder_path, first_n=None, every_nth=None):
         file_list = os.listdir(folder_path)
         file_list = natsorted(file_list)
+        if first_n is not None:
+            if first_n > 0:
+                file_list = file_list[:first_n]
+            else:
+                file_list = file_list[first_n:]
         if every_nth is not None:
             file_list = file_list[::every_nth]
         list_of_images = list()

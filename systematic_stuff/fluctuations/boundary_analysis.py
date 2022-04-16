@@ -2,6 +2,7 @@ import json
 import os
 import pickle
 import numpy as np
+from matplotlib import pyplot as plt
 from skimage.io import imsave
 
 from data_analysis import DistributionResults, PaperAnalysis, FFTResults
@@ -16,7 +17,7 @@ from systematic_stuff.fluctuations.boundary_detection import FluctuationsDetecto
 
 
 def _all_regions():
-    return ['3microns, 0.2s, r' + str(n) for n in np.arange(1, 7)]
+    return ['run ' + str(n) for n in [4, 6, 8, 9, 10]]
     # return ['3microns, 0.2s, r6']
 
 
@@ -135,16 +136,16 @@ def adjust_rough_offsets(results_path):
     return adjusted
 
 
-def distribution_analysis(results_path, adjusted=False):
+def distribution_analysis(results_path, adjusted=False, ax=None):
     anal = DistributionResults(results_path, original=not adjusted)
-    mean, std = anal.get_analysis()
+    mean, std = anal.get_analysis(ax)
     print("mean = {} \n sigma = {}".format(round(mean, 5), round(std, 2)))
     return std
 
 
-def fft_analysis(results_path, adjusted=False):
+def fft_analysis(results_path, adjusted=False, ax=None):
     anal = FFTResults(results_path, original=not adjusted)
-    return anal.get_analysis()
+    return anal.get_analysis(ax)
 
 
 def get_correlations(results_path, fps, adjusted=False):
@@ -166,7 +167,7 @@ def get_paper_results(results_path, beta, sigma, length):
     print('delta_lambda = {} eV/A'.format(round(stress, 3)))
     results['d_lambda'] = (round(stress, 5), "eV/A")
     S = paper.get_entropy_from_C0(c0)
-    print('delta_S = {} eV/A^2 or {} meV/(1x1)'.format(round(S, 10), round(S * 16 * 1e3, 5)))
+    print('delta_S = {} eV/A^2 or {} meV/(1x1)'.format(round(S, 10), round(S * 16, 5)))
     results['dS_A2'] = (round(S, 10), "eV/A^2")
     results['dS_1x1'] = (round(S * 16 * 1e3, 7), "meV/(1x1)")
     import json
@@ -191,20 +192,20 @@ def draw_analyzed_edge(results_path, region):
 
 
 if __name__ == "__main__":
-    do_detection = 1
-    do_transform = 1
+    do_detection = 0
+    do_transform = 0
     do_analysis = 1
-    regions = [REGION]
-    # region = _all_regions()
+    # regions = [REGION]
+    regions = _all_regions()
     # edges = EDGE
-    edges = EDGE
+    # edges = EDGE
     # edges = _all_edges(regions)
-    make_directories(regions, edges)
-
+    # make_directories(regions, edges)
     for region in regions:
+        edges = _all_edges(region)
         if do_detection:
             detector = FluctuationsDetector(os.path.join(SRC_FOLDER, region), TARGET_FOLDER, edges)
-            detector.many_edge_canny_devernay_detection(load_masks=True)
+            detector.many_edge_canny_devernay_detection(load_masks=False)
         if do_transform:
             for edge in edges:
                 res_path = os.path.join(RESULTS_FOLDER, region, edge)
@@ -214,6 +215,7 @@ if __name__ == "__main__":
                 res_path = os.path.join(RESULTS_FOLDER, region, edge)
                 sigma = distribution_analysis(res_path, adjusted=False)
                 beta, L = fft_analysis(res_path, adjusted=False)
+                get_paper_results(res_path, sigma=sigma, beta=beta, length=L)
                 get_correlations(res_path, fps=15, adjusted=False)
                 draw_analyzed_edge(res_path, region)
-                get_paper_results(res_path, beta=beta, sigma=sigma, length=L)
+

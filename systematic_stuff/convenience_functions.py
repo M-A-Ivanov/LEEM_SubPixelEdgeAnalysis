@@ -8,7 +8,7 @@ from datetime import datetime
 from natsort import natsorted
 import natsort
 import tifffile
-from skimage import io
+from skimage import io, img_as_uint
 from tqdm import tqdm
 
 from image_processing import ImageProcessor
@@ -24,7 +24,8 @@ def _preprocess_image(image, local_hist=None):
         process.clahe_hist_equal()
     else:
         process.global_hist_equal()
-    return process.result(uint8=True)
+    process.denoise_bilateral()
+    return process.result(uint16=True)
 
 
 def _cutting_fn(x_frac=0.5, y_frac=0.5, area_frac=0.5):
@@ -75,24 +76,45 @@ def _align_images(list_of_images):
     return list_of_images
 
 
+def _average_images(images, n_images=1, sliding=False):
+    images = np.array([image.data for image in images])
+    if sliding:
+        if n_images == 1:
+            factors = np.array([0.75, 0.25])
+        elif n_images == 2:
+            factors = [0.75, 0.16, 0.08]
+        else:
+            factors = [0.75] + [0.12 / n for n in range(1, n_images + 1)]
+        return np.sum(np.array([factor * images.copy()[n:-(n_images - n + 1)] / np.sum(factors)
+                                for factor, n in zip(factors, range(n_images, -1, -1))]),
+                      axis=0)
+
+    else:
+        new_frame_number = images.shape[0] // n_images
+        images = images[:new_frame_number * n_images]
+        return np.mean(images.reshape(n_images, new_frame_number, images.shape[1], images.shape[2]), axis=0)
+
+
 def raw_to_tiff(folder_path, overlay: List[str] = None, align=True, process=False):
     target_path = os.path.join(folder_path, "tiff")
     os.makedirs(target_path, exist_ok=True)
     reader = RawReader()
-    images_list = reader.read_folder(folder_path, every_nth=20)
+    images_list = reader.read_folder(folder_path, first_n=-1000)
     # images_list = _sort_by_time(images_list)  # deprecated
     if align:
         images_list = _align_images(images_list)
-    with tifffile.TiffWriter(os.path.join(target_path, 'stack1.tif')) as stack:
+    images_list = [image.data for image in images_list]
+    images_list = _average_images(images_list, 5, False)
+    with tifffile.TiffWriter(os.path.join(target_path, 'growth.tif')) as stack:
         for i, raw in enumerate(images_list):
             if process:
                 image = _preprocess_image(raw.data)
             else:
-                image = raw.data
+                image = img_as_uint(raw.data)
             if overlay is not None:
                 metadata = raw.metadata
                 image = _add_overlay(image, metadata, overlay, images_list[0].metadata)
-            stack.save(image, contiguous=False)
+            stack.write(image, contiguous=False)
 
 
 def raw_tiff_to_video(folder_path, name=None, fps=15, align=True):
@@ -174,12 +196,12 @@ def _add_overlay(image, metadata, overlay, first_image_metadata):
         else:
             overlay_string = overlay_string + info + ': ' + str(round(metadata[info][0], 2)) + ' ' + str(
                 metadata[info][1])
-        return cv2.putText(image, overlay_string,
-                           fontFace=cv2.FONT_HERSHEY_COMPLEX,
-                           org=(10, text_offset),
-                           fontScale=0.75,
-                           color=(0, 255, 0),
-                           lineType=2)
+            image = cv2.putText(image, overlay_string,
+                       fontFace=cv2.FONT_HERSHEY_COMPLEX,
+                       org=(10, text_offset),
+                       fontScale=0.75,
+                       color=(0, 255, 0),
+                       lineType=2)
 
 
 def png_to_video(folder_path, input_dims=(1024, 1024), fps=10):
@@ -211,13 +233,13 @@ def png_to_tiff(folder_path):
 if __name__ == '__main__':
     # HOW TO USE THIS CODE:
     #  1: Copy-paste directory path (keep the r in the beginning of string, otherwise Windows won't be happy!)
-    FOLDER = r'E:\Cardiff LEEM\Raw_images\11032022\run 10'
+    FOLDER = r'E:\Cardiff LEEM\Raw_images\11032022\cooling'
     #  2: Choose appropriate function, depending on desired format.
     # raw_to_png(FOLDER)
 
     # 2.5: For the other ones, you can add an overlay of the info you want to print on the image. Most useful are:
     # FOV, Start Voltage, time (you can change color on line 74 or 114)
 
-    raw_tiff_to_video(FOLDER)
+    # raw_tiff_to_video(FOLDER)
     # raw_to_tiff(FOLDER, overlay=['time', 'FOV'])
-    # raw_to_tiff(FOLDER, align=True)
+    raw_to_tiff(FOLDER, align=True, process=False)

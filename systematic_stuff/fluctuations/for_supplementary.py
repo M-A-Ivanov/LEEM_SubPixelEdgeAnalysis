@@ -1,9 +1,12 @@
 import pickle
+from typing import List
 
 import cv2 as cv2
 import numpy as np
 from scipy.interpolate import UnivariateSpline
+from scipy import optimize
 from scipy.stats import stats
+from skimage.measure import block_reduce
 from skimage.transform import resize
 from matplotlib import pyplot as plt
 from matplotlib.gridspec import GridSpec
@@ -23,7 +26,8 @@ from global_parameters import pixel, AxisNames, CANNY_SIGMA
 from image_processing import ImageProcessor, BackgroundRemover
 from raw_reader import RawReader
 from systematic_stuff.convenience_functions import raw_to_video
-from systematic_stuff.fluctuations.boundary_analysis import _all_regions, load_pickle, _all_edges
+from systematic_stuff.fluctuations.boundary_analysis import _all_regions, load_pickle, _all_edges, \
+    distribution_analysis, fft_analysis, get_paper_results
 import os
 
 video_paths = [os.path.join(SRC_FOLDER, region) for region in _all_regions()]
@@ -40,7 +44,8 @@ class FigureCreator:
         try:
             self.edge_process = EdgeAnalyzer(load_pickle(os.path.join(self.res_path, "coordinates_canny.pickle")))
         except FileNotFoundError as e:
-            self.edge_process = EdgeAnalyzer(load_pickle(os.path.join(self.res_path, "coordinates_canny_devernay.pickle")))
+            self.edge_process = EdgeAnalyzer(
+                load_pickle(os.path.join(self.res_path, "coordinates_canny_devernay.pickle")))
         self.coordinates = self.edge_process.edges
         self.read = RawReader()
         self.image_process = ImageProcessor()
@@ -54,9 +59,11 @@ class FigureCreator:
         self.ax.grid(False)
         plt.tight_layout()
 
-    def _load_images(self, frame=None):
+    def _load_images(self, frame=None, n_images=None, every_n_images=None):
         if frame is None:
-            self.images = [im.data for im in self.read.read_folder(folder_path=os.path.join(SRC_FOLDER, self.region))]
+            self.images = [im.data for im in self.read.read_folder(folder_path=os.path.join(SRC_FOLDER, self.region),
+                                                                   first_n=n_images,
+                                                                   every_nth=every_n_images)]
         else:
             self.images = self.read.read_single(folder_path=os.path.join(SRC_FOLDER, self.region), frames=frame).data
 
@@ -105,21 +112,14 @@ class FigureCreator:
             else:
                 self.edge_process.get_perpendiculars_adaptive(edge_frame=0, every_point=True, pixel_average=16)
 
-    def _select_perpendiculars(self, n_perps=6):
+    def _select_perpendiculars(self, every_n_perps=0):
         self._get_perpendiculars()
         total_perps = len(self.edge_process.perpendiculars)
-        middle_perp_index = int(total_perps / 2)
-        if n_perps >= total_perps:
+        if every_n_perps == 0:
+            middle_perp_index = int(total_perps / 2)
+            self.edge_process.perpendiculars = [self.edge_process.perpendiculars[int(4 / 3 * middle_perp_index + 2)]]
             return
-        if n_perps == 1:
-            self.edge_process.perpendiculars = [self.edge_process.perpendiculars[middle_perp_index]]
-            return
-
-        every_nth_perp = int((2*middle_perp_index-1) / n_perps)
-        indeces = np.arange(middle_perp_index - int(np.floor(every_nth_perp * n_perps / 2)),
-                            middle_perp_index + int(np.ceil(every_nth_perp * n_perps / 2)),
-                            every_nth_perp)
-        self.edge_process.perpendiculars = [self.edge_process.perpendiculars[idx] for idx in indeces]
+        self.edge_process.perpendiculars = self.edge_process.perpendiculars[::every_n_perps]
 
     def draw_perpendiculars(self, alpha, color='red', linestyle="--", line_thickness=3):
         for perp in self.edge_process.perpendiculars:
@@ -158,7 +158,7 @@ class FigureCreator:
     def _get_rectangle_for_perps(self, distance_between_perpendiculars=10, rotated=True):
         mask_image = np.zeros_like(self.images, dtype=np.uint8)
         for perp in self.edge_process.perpendiculars:
-            mask_image[int(perp.mid[1]), int(perp.mid[0])] = 1
+            mask_image[int(perp.mid[1] - 1), int(perp.mid[0] - 1)] = 1
         kernel = np.ones((distance_between_perpendiculars, distance_between_perpendiculars), np.uint8)
         img = cv2.dilate(mask_image, kernel, iterations=1)
         return self._get_rectangle(img, rotated)
@@ -169,11 +169,15 @@ class FigureCreator:
             rect = cv2.minAreaRect(contour[0])
         else:
             x, y, w, h = cv2.boundingRect(contour[0])
-            rect = ((x + int(w / 2), y + int(h / 2)), (w, h), 0)
+            rect = ((float(x + w / 2), float(y + h / 2)), (float(w), float(h)), 0.)
         return rect
 
-    def load_mask(self):
-        return load_pickle(os.path.join(self.res_path, "mask.pickle"))
+    def load_mask(self, edge=None):
+        if edge is None:
+            path = self.res_path
+        else:
+            path = os.path.join(RESULTS_FOLDER, self.region, edge)
+        return load_pickle(os.path.join(path, "mask.pickle"))
 
     def _draw_rectangle(self, rect, color="orange", linestyle="--", line_thickness=2., ax=None):
         if ax is None:
@@ -208,7 +212,7 @@ class FigureCreator:
         return img_crop
 
     def draw_perpendiculars_detection(self, n_perps=5, frame=0):
-        self._select_perpendiculars(n_perps=n_perps)
+        self._select_perpendiculars(3)
         self.draw_perpendiculars(0.90, line_thickness=3, color="red", linestyle='--')
         offsets = self.edge_process.get_edge_variations(savefig=None, frames=frame)
 
@@ -242,20 +246,18 @@ class FigureCreator:
         for perp in self.edge_process.perpendiculars:
             perp.mid = np.subtract(perp.mid, np.roll(self.image_process.cut_corrections, 1, axis=0))
             perp.second = np.subtract(perp.second, np.roll(self.image_process.cut_corrections, 1, axis=0))
-        self._select_perpendiculars(n_perps=128)
+        self._select_perpendiculars(every_n_perps=3)
         self.draw_perpendiculars(alpha=0.3, line_thickness=2, color="darkred")
-        self._select_perpendiculars(n_perps=1)
+        self._select_perpendiculars(0)
         self.draw_perpendiculars(alpha=0.9, line_thickness=3, color="red", linestyle='--')
         # rect = self._get_rectangle_for_perps(rotated=False, distance_between_perpendiculars=20)
         self.add_scalebar()
-        rect_to_draw = np.asarray(self._get_rectangle_for_perps(rotated=True, distance_between_perpendiculars=10))
+        rect_to_draw = np.asarray(self._get_rectangle_for_perps(rotated=False, distance_between_perpendiculars=32))
         rect_to_draw[2] = np.rad2deg(-np.arctan(self.edge_process.perpendiculars[0].angle_to_y()))
         rect_to_draw = tuple(rect_to_draw)
         self._draw_rectangle(rect_to_draw, line_thickness=2, color="dodgerblue")
         # plt.axis("equal")
         plt.axis("off")
-        # self.zoom_in_rectangle(rect)
-
         self.save(2)
         self.show()
         self.clear()
@@ -278,54 +280,59 @@ class FigureCreator:
         self.image_process.load_image(self.images)
         mask = self.load_mask()
         new_mask = self.image_process.cut_to_mask(mask)
-        self.image_process.global_hist_equal()
-        self.image_process.denoise_nlm()
+        self.image_process.normalize()
+        self.image_process.denoise_bilateral(bins=1e7)
+        # self.image_process.denoise_gaussian(0.5)
 
-        self._select_perpendiculars(n_perps=1)
+        self._select_perpendiculars(0)
         perp = self.edge_process.perpendiculars[0]
         perp.mid = np.subtract(perp.mid, np.roll(self.image_process.cut_corrections, 1, axis=0))
         perp.second = np.subtract(perp.second, np.roll(self.image_process.cut_corrections, 1, axis=0))
         edge = self.edge_process.edges[frame]
         edge = np.subtract(edge, np.roll(self.image_process.cut_corrections, 1, axis=0))
-        image = self._draw_edge(self.image_process.result(), edge_coordinates=edge, color="lawngreen", alpha=0.4)
+        # image = self._draw_edge(self.image_process.result(), edge_coordinates=edge, color="lawngreen", alpha=0.4)
+        image = self.image_process.result()
         self.add_scalebar()
-        for color, name, detection_method in zip(["deepskyblue", "darkorange"],
-                                                 ["Linear Interpolation", "Weno projection"],
-                                                 [perp.project_interpolation, perp.project_weno]):
-            detection_method(edge)
-            original, detection, projected, sign = perp.found_points[-1]
-            detection = np.apply_along_axis(rotate, axis=0, arr=detection, origin=np.array([0, 0]),
-                                            angle=np.deg2rad(perp.angle_to_y()))
-            if original.ndim > 1:
-                original = np.apply_along_axis(rotate, axis=1, arr=original, origin=np.array([0, 0]),
-                                               angle=np.deg2rad(perp.angle_to_y()))
-            else:
-                original = np.asarray(rotate(original, origin=np.array([0, 0]), angle=np.deg2rad(perp.angle_to_y())))
-            projected = rotate(projected, origin=np.array([0, 0]), angle=np.deg2rad(perp.angle_to_y()))
-            #  Minuses are because in CV/skimage, y-axis goes downwards, in calculation, goes upwards
-            self.ax.plot(detection[0, 1:-1] + 1, -detection[1, 1:-1] - 1, linewidth=5, linestyle='--', color=color,
-                         label=name)
-            if original.ndim == 1:
-                self.ax.scatter(original[0, ] + 1, -original[1, ] - 1, color=color)
-            else:
-                self.ax.scatter(original[1:-1, 0] + 1, -original[1:-1, 1] - 1, color=color)
-            # self.ax.scatter(projected[0] + 1, -projected[1] - 1, marker="x", color=color, s=50, alpha=1)
+        # for color, name, detection_method in zip(["deepskyblue", "darkorange"],
+        #                                          ["Linear Interpolation", "Weno projection"],
+        #                                          [perp.project_interpolation, perp.project_weno]):
+        color, name, detection_method = "darkorange", "Weno projection", perp.project_weno
+        detection_method(edge)
+        original, detection, projected, sign = perp.found_points[-1]
+        detection = np.apply_along_axis(rotate, axis=0, arr=detection, origin=np.array([0, 0]),
+                                        angle=np.deg2rad(perp.angle_to_y()))
+        if original.ndim > 1:
+            original = np.apply_along_axis(rotate, axis=1, arr=original, origin=np.array([0, 0]),
+                                           angle=np.deg2rad(perp.angle_to_y()))
+        else:
+            original = np.asarray(rotate(original, origin=np.array([0, 0]), angle=np.deg2rad(perp.angle_to_y())))
+        projected = rotate(projected, origin=np.array([0, 0]), angle=np.deg2rad(perp.angle_to_y()))
+        #  Minuses are because in CV/skimage, y-axis goes downwards, in calculation, goes upwards
+        self.ax.plot(detection[0,], -detection[1,], linewidth=5, linestyle='-', color=color,
+                     label=name)
+        if original.ndim == 1:
+            self.ax.scatter(original[0,], -original[1,], color=color)
+        else:
+            self.ax.scatter(original[1:-1, 0], -original[1:-1, 1], color=color)
+        # self.ax.scatter(projected[0] + .5, -projected[1] + .5, marker="x", color=color, s=50, alpha=1)
 
-        image, extent = perp.get_local_image(image=image, radius=10, offset_to_mid=0,
+        image, extent = perp.get_local_image(image=image, radius=17, offset_to_mid=0,
                                              rotation=False)
-        extent[0] -= 1
-        extent[1] -= 1
-        extent[2] += 1
-        extent[3] += 1
+        extent[0] -= .5
+        extent[1] -= .5
+        extent[2] += .5
+        extent[3] += .5
 
         self.ax.imshow(image, extent=extent, cmap="gray")
-        xy1 = np.array([0.25, 0.25])
-        xy2 = xy1 + perp.get_perp_direction()
-        xy2[1] = -1 * xy2[1]
+        xy1, xy2 = np.array([0, 0], dtype=float), np.array([0, 0], dtype=float)
+        slope = perp.get_perp_direction()
+        xy2[0] = xy1[0] + slope[0]
+        xy2[1] = xy1[1] - slope[1]
+        # xy2[1] = xy2[1]
         self.ax.axline(xy1=xy1, xy2=xy2,
                        color="red", linewidth=6, linestyle='--')
         # plt.axis("equal")
-        plt.legend(prop={'size': 30})
+        # plt.legend(prop={'size': 30})
         plt.axis("off")
         self.save(3)
         self.show()
@@ -336,7 +343,7 @@ class FigureCreator:
         self._get_perpendiculars()
         for perp in self.edge_process.perpendiculars:
             mask_image[int(perp.mid[1]), int(perp.mid[0])] = 1
-        selem = morphology.selem.disk(15)
+        selem = morphology.disk(15)
         mask_image = morphology.binary_dilation(mask_image, selem=selem)
         coordinates = np.ix_(mask_image.any(1), mask_image.any(0))
         cut_corrections = np.array([np.min(coordinates[1]), np.min(coordinates[0])])
@@ -347,11 +354,14 @@ class FigureCreator:
         return cut_corrections
 
     def draw_figure_4(self, frame=0):
+        def tanh(x, a, eta, phi, b):
+            return a * np.tanh(eta * (x + phi)) + b
+
         # Load image and get mask based on perpendiculars
         self._load_images(frame)
         cut_corrections = self.get_ROI()
         # Narrow down to 1 perpendicular asap for efficiency
-        self._select_perpendiculars(n_perps=1)
+        self._select_perpendiculars(0)
         perp = self.edge_process.perpendiculars[0]
         edge = self.edge_process.edges[frame]
 
@@ -363,18 +373,19 @@ class FigureCreator:
         perp.second = np.subtract(perp.second, cut_corrections)
 
         # Same process as in computations
-        self.image_process.global_hist_equal()
-        self.image_process.denoise_nlm()
+        self.image_process.normalize()
+        self.image_process.denoise_bilateral()
 
-        perp.adjust_tanh(self.image_process.result(), rough=rough_offset, radius=10, preprocess_locally=False)
-        profile_line, adjustment, fit_plot, accuracy = perp.found_adjustments[-1]
+        x_pixel, x_fine, profile_line = perp.get_profile_around_detection(self.image_process.result(), rough_offset, 8)
 
-        self.ax.scatter(profile_line[0, :], profile_line[1, :], color='k')
-        self.ax.plot(fit_plot[0, :], fit_plot[1, :], color='r')
+        self.ax.scatter(x_pixel, profile_line, color='k')
+        fit_params, var_matrix = optimize.curve_fit(tanh, x_pixel, profile_line)
+        self.ax.plot(x_fine, tanh(x_fine, *fit_params), color='r')
         # self.ax.axvline(adjustment, linestyle='--', color='r')
         self.ax.axvline(0, linestyle='--', color='sandybrown')
-        self.ax.set_xlabel("Position along perpendicular")
-        self.ax.set_ylabel("Pixel intensity")
+        self.ax.set_xlabel("Position along perpendicular", fontsize=12)
+        self.ax.set_ylabel("Pixel intensity", fontsize=12)
+        self.ax.set_box_aspect(1)
         plt.tight_layout()
 
         self.save(4)
@@ -413,88 +424,186 @@ class FigureCreator:
 
     def draw_figure_4_main(self, frame=0):
         plt.close("all")
+        edges = ["edge 1", "edge 2", "edge 3"]
+        box_colors = ["sandybrown", "limegreen", "cornflowerblue"]
         self._load_images(frame)
 
         self.image_process.load_image(self.images)
-        self.image_process.align(preprocess=True)
+        self.image_process.align(preprocess=False)
         image = self.image_process.result().copy()
-        mask = self.load_mask()
+
         # mask = self.image_process.get_mask(8)
-        new_mask = self.image_process.cut_to_mask(mask)
+
         # fig, ax = plt.subplots(nrows=4, ncols=2, gridspec_kw={'height_ratios': [4, 1, 1, 1]})
         rcParams['axes.titlepad'] = 1
         rcParams['axes.titlesize'] = 8
-        gs = GridSpec(1, 5, wspace=0.25, hspace=0.15)
+        gs = GridSpec(4, 5, wspace=0.05, hspace=0.1)
         fig = plt.figure()
-
-        raw_img_trim = 50
-        ax = [fig.add_subplot(gs[0, :2]), fig.add_subplot(gs[0, 2]), fig.add_subplot(gs[0, 3]),
-              fig.add_subplot(gs[0, 4])]
-        rect = self._get_rectangle(cv2.UMat(mask.copy().astype(np.uint8)), rotated=True)
-        rect = tuple((tuple(np.array(rect[0]) - raw_img_trim), rect[1], rect[2]))
-        self._draw_rectangle(rect, line_thickness=1, color="sandybrown", ax=ax[0])
-        ax[0].imshow(image[raw_img_trim:-raw_img_trim, raw_img_trim:-raw_img_trim], cmap="gray")
-        ax[0].add_artist(ScaleBar(pixel, "nm", length_fraction=0.3, width_fraction=0.02,
-                                  location="lower left", color="goldenrod", frameon=False,
-                                  font_properties={"size": 10}))
+        plt.tight_layout()
+        raw_img_trim = 35
+        raw_ax = fig.add_subplot(gs[:, :2])
+        # process_ax = [[fig.add_subplot(gs[i, j]) for i in np.arange(0, len(edges))] for j in np.arange(2, 5)]
+        process_ax = [[fig.add_subplot(gs[:2, i]) for i in np.arange(2, 5)],
+                      [fig.add_subplot(gs[2, i]) for i in np.arange(2, 5)],
+                      [fig.add_subplot(gs[3, i]) for i in np.arange(2, 5)]]
+        sizes_of_scalebars = [0.015, 0.03, 0.06, 0.06]
+        img = image[raw_img_trim:-raw_img_trim, raw_img_trim:-raw_img_trim]
+        raw_ax.imshow(img, cmap="gray")
+        _, _, w, h = raw_ax.get_position().bounds
+        raw_ax.add_artist(ScaleBar(pixel, "nm", length_fraction=0.3, width_fraction=sizes_of_scalebars[0],
+                                   location="lower left", color="goldenrod", frameon=False,
+                                   font_properties={"size": 12}))
         # ax[0].axis("equal")
-        ax[0].axis("off")
-        ax[0].title.set_text("Raw Image")
-        self.image_process.clahe_hist_equal()
-        ax[1].imshow(self.image_process.result(), cmap="gray")
-        ax[1].title.set_text(self.image_process.titles[-1])
-        ax[1].add_artist(ScaleBar(pixel, "nm", length_fraction=0.8, width_fraction=0.02,
-                                  location="lower left", color="goldenrod", frameon=False,
-                                  font_properties={"size": 10}))
-        # ax[1].axis("equal")
-        ax[1].axis("off")
-        self.image_process.denoise_bilateral()
-        ax[2].imshow(self.image_process.result(), cmap="gray")
-        ax[2].title.set_text(self.image_process.titles[-1])
-        # ax[2].axis("equal")
-        ax[2].axis("off")
-        self.image_process.canny_devernay_edges(sigma=CANNY_SIGMA, mask=new_mask)
-        self.image_process.clean_up(15)
-        ax[3].title.set_text(self.image_process.titles[-2])
-        ax[3].imshow(self.image_process.result(), cmap="gray")
-        # ax[3].axis("equal")
-        ax[3].axis("off")
+        raw_ax.axis("off")
+        # raw_ax.title.set_text("Raw Image")
+        resize_to_width = None
+        for i, (edge, box_color) in enumerate(zip(edges, box_colors)):
+            mask = self.load_mask(edge)
+            new_mask = self.image_process.cut_to_mask(mask)
+            rect = self._get_rectangle(cv2.UMat(mask.copy().astype(np.uint8)), rotated=False)
+            rect = tuple((tuple(np.array(rect[0]) - raw_img_trim), rect[1], rect[2]))
+            self._draw_rectangle(rect, line_thickness=1, color=box_color, ax=raw_ax)
+
+            self.image_process.normalize()
+            # current_width = self.image_process.result().shape[1]
+            # if resize_to_width is None:
+            #     resize_to_width = current_width
+            # resize_factor = resize_to_width/current_width
+            # new_mask = self.image_process.upscale(resize_factor, mask=new_mask)
+            img = self.image_process.result().copy()
+
+            process_ax[i][0].imshow(img[2:-2, 2:-2, ], cmap="gray")
+            _, _, w, h = process_ax[i][0].get_position().bounds
+            # process_ax[i][0].title.set_text(self.image_process.titles[-1])
+            process_ax[i][0].add_artist(ScaleBar(pixel, "nm",
+                                                 length_fraction=0.5, width_fraction=sizes_of_scalebars[i + 1],
+                                                 location="lower left", color="goldenrod", frameon=False,
+                                                 font_properties={"size": 10}))
+            process_ax[i][0].axis("off")
+            self.image_process.denoise_bilateral()
+            process_ax[i][1].imshow(self.image_process.result()[2:-2, 2:-2, ], cmap="gray")
+            # process_ax[i][1].title.set_text(self.image_process.titles[-1])
+            process_ax[i][1].axis("off")
+            self.image_process.canny_devernay_edges(sigma=CANNY_SIGMA, mask=new_mask)
+            # self.image_process.clean_up(5)
+            # process_ax[i][2].title.set_text(self.image_process.titles[-2])
+            process_ax[i][2].imshow(self.image_process.result()[2:-2, 2:-2, ], cmap="gray")
+            process_ax[i][2].axis("off")
+            self.image_process.revert(4)
+
         path = os.path.join(self.res_path, "for_suppl")
         fig.subplots_adjust(top=0.65)
         # fig.tight_layout()
         os.makedirs(path, exist_ok=True)
-        plt.savefig(os.path.join(path, "frame_{}.png".format("detection")), dpi=1024)
+        plt.savefig(os.path.join(path, "frame_{}.png".format("detection")), dpi=2048)
         plt.show()
         plt.close()
 
-    def fluctuations_video(self):
-        self._load_images(frame=None)
-        mask = self.load_mask()
-        # self.image_process.align(preprocess=True)
+    def average(self, images=None, n_images=1, sliding=False):
+        if images is None:
+            images = self.images.copy()
+
+        images = np.array(images)
+        if sliding:
+            if n_images == 1:
+                factors = np.array([0.75, 0.25])
+            elif n_images == 2:
+                factors = [0.75, 0.16, 0.08]
+            else:
+                factors = [0.75] + [0.12 / n for n in range(1, n_images + 1)]
+            return np.sum(np.array([factor * images.copy()[n:-(n_images - n + 1)] / np.sum(factors)
+                                    for factor, n in zip(factors, range(n_images, -1, -1))]),
+                          axis=0)
+
+        else:
+            new_frame_number = images.shape[0] // n_images
+            images = images[:new_frame_number * n_images]
+            return np.mean(images.reshape(n_images, new_frame_number, images.shape[1], images.shape[2]), axis=0)
+            # return block_reduce(images, block_size=(n_images, images.shape[1], images.shape[2]),
+            #                     func=np.mean, func_kwargs={"axis": 0})
+
+    def full_process_image(self):
+        shape = self.image_process.result().shape
+        image = resize(self.image_process.result(), (4 * shape[0], 4 * shape[1]))
+        self.image_process.denoise_boxcar(kernel_radius=3)
+        image = np.concatenate((image, resize(self.image_process.result(), (4 * shape[0], 4 * shape[1]))),
+                               axis=1)
+        self.image_process.revert(1)
+        self.image_process.denoise_gaussian(3)
+        image = np.concatenate((image, resize(self.image_process.result(), (4 * shape[0], 4 * shape[1]))),
+                               axis=1)
+        self.image_process.revert(1)
+        self.image_process.denoise_nlm(fast=False)
+        return np.concatenate((image, resize(self.image_process.result(), (4 * shape[0], 4 * shape[1]))),
+                              axis=1)
+
+    @staticmethod
+    def _add_overlay(image, overlay_names: List[str], overlay_values: List[tuple]):
+        image = np.stack((image,) * 3, axis=-1)
+        dy = 20
+        text_offset = 20
+        for name, (value, units) in zip(overlay_names, overlay_values):
+            overlay_line = "{}: {} {}".format(name, value, units)
+            text_offset = text_offset + dy
+            image = cv2.putText(image, overlay_line,
+                                fontFace=cv2.FONT_HERSHEY_COMPLEX,
+                                org=(10, text_offset),
+                                fontScale=0.5,
+                                color=(255, 0, 0),
+                                lineType=2)
+        return image
+
+    def fluctuations_video(self, first_n_images=200, fps: int = None, FOV: str = None, T: int = None):
+        self._load_images(frame=None, n_images=first_n_images)
+        # mask = self.load_mask()
+
         # _ = self.image_process.cut_to_mask(mask)
         # self.image_process.denoise_nlm()
-        name = "fluctuations_video"
+        name = "fluctuations_video_2"
+        # images = self.average(n_images=3, sliding=False)
+        images = self.average(n_images=1, sliding=True)
+        self.image_process.load_image(images[0])
+        self.image_process.align(preprocess=False)
         with tifffile.TiffWriter(os.path.join(self.res_path, name + '.tif')) as stack:
-            for i, raw in enumerate(tqdm(self.images[:50])):
+            for i, raw in enumerate(tqdm(images)):
                 self.image_process.load_image(raw, label=i)
                 self.image_process.align(preprocess=True)
-                smol_mask = self.image_process.cut_to_mask(mask)
-                self.image_process.clahe_hist_equal()
-                shape = self.image_process.result().shape
-                image = resize(self.image_process.result(), (4 * shape[0], 4 * shape[1]))
-                self.image_process.denoise_boxcar(kernel_radius=3)
-                image = np.concatenate((image, resize(self.image_process.result(), (4 * shape[0], 4 * shape[1]))), axis=1)
-                self.image_process.revert(1)
-                self.image_process.denoise_gaussian(3)
-                image = np.concatenate((image, resize(self.image_process.result(), (4 * shape[0], 4 * shape[1]))), axis=1)
-                self.image_process.revert(1)
-                self.image_process.denoise_nlm(fast=False)
-                image = np.concatenate((image, resize(self.image_process.result(), (4 * shape[0], 4 * shape[1]))), axis=1)
-
-                stack.save(img_as_ubyte(image),
-                           contiguous=False)
+                # smol_mask = self.image_process.cut_to_mask(mask)
+                self.image_process.normalize()
+                stack.write(img_as_ubyte(self.image_process.result(uint16=True)),
+                            contiguous=False)
 
         print("Video *{}* was produced".format(name))
+
+    def fluctuations_video_overlay(self, first_n_images=200):
+        fps = 15
+        FOV = 6
+        T = 540
+        self._load_images(frame=None, n_images=first_n_images)
+        mask = self.load_mask()
+
+        # _ = self.image_process.cut_to_mask(mask)
+        # self.image_process.denoise_nlm()
+        name = "fluctuations_video_2"
+        # images = self.average(n_images=3, sliding=False)
+        images = self.average(n_images=1, sliding=True)
+        self.image_process.load_image(images[0])
+        self.image_process.align(preprocess=False)
+        time = np.round(np.arange(0, fps * images.shape[0], 1. / fps), 3)
+        with tifffile.TiffWriter(os.path.join(self.res_path, name + '.tif')) as stack:
+            for t, raw in tqdm(zip(time, images)):
+                self.image_process.load_image(raw)
+                self.image_process.align(preprocess=True)
+                smol_mask = self.image_process.cut_to_mask(mask)
+                self.image_process.normalize()
+                self.image_process.upscale(4)
+                image = self._add_overlay(img_as_ubyte(self.image_process.result(uint16=True)),
+                                          ["time", "FOV", "Temp"],
+                                          [(t, "s"), (FOV, r"micron"), (T, r"C")])
+                stack.write(image,
+                            contiguous=False)
+
+            print("Video *{}* was produced".format(name))
 
     def draw_hannon_denoising(self, frame=0):
         plt.close("all")
@@ -831,7 +940,7 @@ def analysis_vs_experiment_duration():
         ax[1].set(xlabel=AxisNames.distr()["x"], ylabel=AxisNames.distr()["y"])
         n, q, y_q_msa = fft_analyser.get_y_q_msa()
         y_q_msa = y_q_msa
-        ax[0].plot(1/(q**2), y_q_msa, marker='o', alpha=0.8, label="duration fraction: {}".format(frac))
+        ax[0].plot(1 / (q ** 2), y_q_msa, marker='o', alpha=0.8, label="duration fraction: {}".format(frac))
         ax[0].legend()
         ax[0].set_aspect('auto')
         ax[0].set(xlabel=AxisNames.fft()["x"], ylabel=AxisNames.fft()["y"])
@@ -931,11 +1040,11 @@ def draw_edges_with_time():
     positions = pixel * positions
     for i in range(N_frames):
         frame = start_frame + i * delta_frames
-        time_difference = "{} s".format(np.round((1./fps)*i*delta_frames, 5))
+        time_difference = "{} s".format(np.round((1. / fps) * i * delta_frames, 5))
         ax[i].plot(x_axis, positions[:, frame], label=time_difference)
         ax[i].set_ylim(-20, 20)
         ax[i].legend()
-        if i < N_frames-1:
+        if i < N_frames - 1:
             ax[i].get_xaxis().set_ticks([])
     plt.show()
 
@@ -956,19 +1065,28 @@ def show_detection():
     processor.figure_result()
 
 
+def get_analysis_figure(region, edge):
+    results_path = os.path.join(RESULTS_FOLDER, region, edge)
+    fig, ax = plt.subplots(2, 1, figsize=(6, 8))
+    distribution_analysis(results_path, adjusted=False, ax=ax[1])
+    fft_analysis(results_path, adjusted=False, ax=ax[0])
+    plt.savefig(os.path.join(results_path, 'double_fig.png'), dpi=1000, transparent=False)
+
+
 if __name__ == '__main__':
     # for i, path in enumerate(video_paths):
     #     raw_to_video(path, destination_path=target_folder, fps=20, name="region" + str(i+10))
     # _test_remove_background()
-    region = REGION
+    region = "run 6"
     edge = "edge 1"
     fig = FigureCreator(region, edge)
-    fig.draw_figure_4_main()
+    # fig.draw_figure_4_main()
+    # get_analysis_figure(region, edge)
     # fig.draw_figure_1()
     # fig.draw_figure_2()
     # fig.draw_figure_3()
     # fig.draw_figure_4()
-    # fig.fluctuations_video()
+    fig.fluctuations_video_overlay(300)
     # analysis_vs_cap_in_amplitude()
-    analysis_vs_experiment_duration()
+    # analysis_vs_experiment_duration()
     # show_detection()
