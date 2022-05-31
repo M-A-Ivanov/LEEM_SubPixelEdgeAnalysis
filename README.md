@@ -7,3 +7,6 @@ to enable easy application of the automated processes I use in the project.
 
 Contains convenience functions for easy use of Elmitec LEEM .dat files. 
 
+Comming next: A Front-End for ease of use. 
+              Unit tests for each method.
+
